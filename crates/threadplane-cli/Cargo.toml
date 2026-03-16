@@ -1,0 +1,16 @@
+[package]
+name = "threadplane-cli"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+threadplane-core = { path = "../threadplane-core" }
+uuid.workspace = true
