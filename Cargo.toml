@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/threadplane-bench",
     "crates/threadplane-cli",
     "crates/threadplane-core",
     "crates/threadplane-server",

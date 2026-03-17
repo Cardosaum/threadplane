@@ -1,0 +1,27 @@
+[package]
+name = "threadplane-bench"
+categories = ["command-line-utilities", "development-tools"]
+description = "Repeatable benchmark harness for the threadplane coordination plane"
+edition.workspace = true
+keywords = ["agents", "benchmark", "cli", "latency", "throughput"]
+license.workspace = true
+readme = "../../README.md"
+repository = "https://github.com/Cardosaum/threadplane"
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+dotenvy.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+snafu.workspace = true
+threadplane-core = { path = "../threadplane-core" }
+uuid.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

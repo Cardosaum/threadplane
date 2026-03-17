@@ -10,6 +10,7 @@ Read next:
 
 - [Onboarding guide](./docs/onboarding.md)
 - [Configuration guide](./docs/configuration.md)
+- [Benchmarking guide](./docs/benchmarking.md)
 - [Dependency policy](./docs/dependencies.md)
 - [HTTP API reference](./docs/http-api.md)
 
@@ -96,6 +97,12 @@ For daily dogfooding, use the one-command local refresh flow:
 
 ```bash
 ./scripts/dogfood.sh up
+```
+
+For repeatable throughput and latency checks, use the benchmark harness:
+
+```bash
+./scripts/benchmark.sh mixed
 ```
 
 ## Two-Minute Walkthrough
@@ -317,6 +324,7 @@ VarveDB is an important influence for the event-sourcing model, but this POC opt
 - `crates/threadplane-core`: shared types, config loading, and core helpers
 - `crates/threadplane-server`: HTTP server and projections
 - `crates/threadplane-cli`: human and agent CLI
+- `crates/threadplane-bench`: repeatable benchmark harness
 - `compose.yaml`: local PostgreSQL and Neo4j stack
 - `docs/poc-scope.md`: POC boundaries and success criteria
 - `docs/onboarding.md`: first-run walkthrough for humans and agents
