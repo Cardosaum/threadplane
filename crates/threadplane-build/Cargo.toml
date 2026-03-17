@@ -1,0 +1,14 @@
+[package]
+name = "threadplane-build"
+categories = ["development-tools::build-utils"]
+description = "Shared build-time metadata helpers for threadplane crates"
+edition.workspace = true
+keywords = ["build", "git", "metadata", "threadplane"]
+license.workspace = true
+readme = "../../README.md"
+repository = "https://github.com/Cardosaum/threadplane"
+rust-version.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true

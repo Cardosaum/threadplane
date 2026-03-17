@@ -16,7 +16,6 @@ workspace = true
 [dependencies]
 chrono.workspace = true
 clap.workspace = true
-dotenvy.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,3 +25,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+
+[build-dependencies]
+threadplane-build = { path = "../threadplane-build" }

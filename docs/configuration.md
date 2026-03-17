@@ -4,12 +4,12 @@
 
 ## Discovery Order
 
-The CLI and server load config in this order:
+The CLI and server start from built-in defaults, then layer config in this order:
 
-1. built-in defaults
-2. repo-local `etc/config.toml`
-3. system config at `/etc/threadplane/config.toml`
-4. `THREADPLANE_CONFIG=/path/to/config.toml`
+1. `--config /path/to/config.toml` for explicit one-off CLI runs
+2. `THREADPLANE_CONFIG=/path/to/config.toml`
+3. repo-local `etc/config.toml`
+4. system config at `/etc/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
 
 Inspect the resolved config and discovery order with:

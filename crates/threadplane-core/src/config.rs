@@ -1,4 +1,7 @@
-use std::{env, path::PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 use figment::{
     providers::{Env, Format as _, Serialized, Toml},
@@ -15,6 +18,8 @@ pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:4000";
 pub const DEFAULT_LEASE_SECONDS: i64 = 300;
 pub const DEPENDS_ON_RELATION: &str = "depends_on";
 pub const IMPLEMENTS_EPIC_RELATION: &str = "implements_epic";
+pub const ENV_CONFIG_PATH: &str = "THREADPLANE_CONFIG";
+pub const ENV_PREFIX: &str = "THREADPLANE__";
 pub const XANADU_RELATION: &str = "xanadu_link";
 
 #[derive(Debug, Snafu)]
@@ -83,6 +88,21 @@ pub struct ThreadplaneConfig {
     pub server: ServerConfig,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigDiscovery {
+    pub env_override: Option<PathBuf>,
+    pub env_prefix: &'static str,
+    pub explicit_override: Option<PathBuf>,
+    pub search_order: Vec<PathBuf>,
+    pub selected_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedThreadplaneConfig {
+    pub config: ThreadplaneConfig,
+    pub discovery: ConfigDiscovery,
+}
+
 #[inline]
 #[must_use]
 pub fn default_config_path() -> PathBuf {
@@ -103,43 +123,88 @@ pub fn default_system_config_path() -> PathBuf {
 /// Returns an error when the optional config file cannot be parsed or when
 /// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
 pub fn load_threadplane_config() -> Result<ThreadplaneConfig, ThreadplaneError> {
-    let figment = config_path_from_env()
-        .or_else(local_config_path_if_present)
-        .or_else(system_config_path_if_present)
-        .map_or_else(
-            || {
-                Figment::from(Serialized::defaults(ThreadplaneConfig::default()))
-                    .merge(Env::prefixed("THREADPLANE__").split("__"))
-            },
-            |config_path| {
-                Figment::from(Serialized::defaults(ThreadplaneConfig::default()))
-                    .merge(Toml::file(config_path))
-                    .merge(Env::prefixed("THREADPLANE__").split("__"))
-            },
-        );
+    load_threadplane_config_with_path(None).map(|loaded| loaded.config)
+}
 
-    figment.extract().context(ConfigLoad)
+#[inline]
+/// Loads layered runtime configuration from defaults, optional TOML, and environment overrides.
+///
+/// `config_path` is an explicit one-off override, typically provided by a CLI flag.
+///
+/// # Errors
+///
+/// Returns an error when the optional config file cannot be parsed or when
+/// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
+pub fn load_threadplane_config_with_path(
+    config_path: Option<&Path>,
+) -> Result<LoadedThreadplaneConfig, ThreadplaneError> {
+    let discovery = discover_threadplane_config(config_path);
+    let figment = figment_with_discovery(&discovery);
+    let config = figment.extract().context(ConfigLoad)?;
+
+    Ok(LoadedThreadplaneConfig { config, discovery })
+}
+
+#[inline]
+#[must_use]
+pub fn discover_threadplane_config(config_path: Option<&Path>) -> ConfigDiscovery {
+    let env_override = config_path_from_env();
+    let explicit_override = config_path.map(Path::to_path_buf);
+    let (search_order, selected_path) = resolve_config_path(config_path, env_override.clone());
+
+    ConfigDiscovery {
+        env_override,
+        explicit_override,
+        search_order,
+        selected_path,
+        env_prefix: ENV_PREFIX,
+    }
+}
+
+#[inline]
+#[must_use]
+fn figment_with_discovery(discovery: &ConfigDiscovery) -> Figment {
+    let base_figment = Figment::from(Serialized::defaults(ThreadplaneConfig::default()));
+    let layered_figment = if let Some(config_path) = discovery.selected_path.as_ref() {
+        base_figment.merge(Toml::file(config_path))
+    } else {
+        base_figment
+    };
+
+    layered_figment.merge(Env::prefixed(ENV_PREFIX).split("__"))
+}
+
+#[inline]
+#[must_use]
+fn resolve_config_path(
+    explicit_override: Option<&Path>,
+    env_override: Option<PathBuf>,
+) -> (Vec<PathBuf>, Option<PathBuf>) {
+    if let Some(config_path) = explicit_override {
+        let explicit_path = config_path.to_path_buf();
+        return (vec![explicit_path.clone()], Some(explicit_path));
+    }
+
+    if let Some(config_path) = env_override {
+        return (vec![config_path.clone()], Some(config_path));
+    }
+
+    let local_path = default_config_path();
+    let system_path = default_system_config_path();
+    let search_order = vec![local_path.clone(), system_path.clone()];
+    let selected_path = local_path
+        .exists()
+        .then_some(local_path)
+        .or_else(|| system_path.exists().then_some(system_path));
+
+    (search_order, selected_path)
 }
 
 #[inline]
 #[must_use]
 fn config_path_from_env() -> Option<PathBuf> {
-    env::var("THREADPLANE_CONFIG")
+    env::var(ENV_CONFIG_PATH)
         .ok()
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-#[inline]
-#[must_use]
-fn local_config_path_if_present() -> Option<PathBuf> {
-    let config_path = default_config_path();
-    config_path.exists().then_some(config_path)
-}
-
-#[inline]
-#[must_use]
-fn system_config_path_if_present() -> Option<PathBuf> {
-    let config_path = default_system_config_path();
-    config_path.exists().then_some(config_path)
 }

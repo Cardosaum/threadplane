@@ -64,8 +64,7 @@ That keeps local setup simpler and makes the project easier to run in containers
 - `chrono`: timestamps in records and event payloads
 - `clap`: CLI parsing and help UX for `threadplane-cli`
 - `derive_more`: low-boilerplate constructors and display impls
-- `dotenvy`: local developer env loading
-- `figment`: layered config loading from `etc/config.toml` and env overrides
+- `figment`: layered config loading from explicit TOML selection plus nested env overrides
 - `neo4rs`: Neo4j projection client
 - `reqwest`: blocking HTTP client for the CLI
 - `rstest`: table-driven unit tests

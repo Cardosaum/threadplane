@@ -231,7 +231,7 @@ pub(crate) struct AppConfig {
 }
 
 impl AppConfig {
-    fn from_env() -> ServerResult<Self> {
+    fn from_runtime_config() -> ServerResult<Self> {
         let config = load_threadplane_config().context(LoadConfig)?;
         Self::from_threadplane_config(config)
     }
@@ -399,10 +399,9 @@ fn init_tracing() {
 }
 
 pub(crate) async fn run() -> ServerResult<()> {
-    drop(dotenvy::dotenv());
     init_tracing();
 
-    let config = AppConfig::from_env()?;
+    let config = AppConfig::from_runtime_config()?;
     let shutdown = ShutdownCoordinator::new();
     let runtime = ServerRuntime::bootstrap(config).await?;
     let run_result = Box::pin(runtime.run(shutdown.token())).await;

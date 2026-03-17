@@ -4,13 +4,13 @@
 )]
 
 use chrono::Utc;
-use std::{env, time::Instant};
+use std::time::Instant;
 
 use clap::Parser as _;
 use reqwest::blocking::Client;
 use snafu::ResultExt as _;
 
-use threadplane_core::{load_threadplane_config, BuildInfo, ServiceSnapshot};
+use threadplane_core::{load_threadplane_config_with_path, BuildInfo, ServiceSnapshot};
 
 use crate::{
     build_info::current_build_info,
@@ -21,14 +21,14 @@ use crate::{
 };
 
 pub(crate) fn run() -> Result<()> {
-    drop(dotenvy::dotenv());
-
     let cli = Cli::parse();
-    apply_config_override(&cli);
-
-    let config = load_threadplane_config().context(ConfigLoad)?;
+    let loaded_config =
+        load_threadplane_config_with_path(cli.config.as_deref()).context(ConfigLoad)?;
     let client = build_http_client()?;
-    let server = cli.server.clone().unwrap_or_else(|| config.cli.url.clone());
+    let server = cli
+        .server
+        .clone()
+        .unwrap_or_else(|| loaded_config.config.cli.url.clone());
 
     match cli.command {
         Command::Run(run_command) => {
@@ -62,12 +62,6 @@ pub(crate) fn run() -> Result<()> {
             println!("{rendered}");
             Ok(())
         }
-    }
-}
-
-fn apply_config_override(cli: &Cli) {
-    if let Some(config_path) = &cli.config {
-        env::set_var("THREADPLANE_CONFIG", config_path);
     }
 }
 

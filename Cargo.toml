@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/threadplane-build",
     "crates/threadplane-bench",
     "crates/threadplane-cli",
     "crates/threadplane-core",
@@ -18,7 +19,6 @@ axum = { version = "0.8.8", default-features = false, features = ["http1", "json
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.6.0", features = ["derive", "env", "wrap_help"] }
 derive_more = { version = "2.1.1", default-features = false, features = ["constructor", "display"] }
-dotenvy = "0.15.7"
 figment = { version = "0.10.19", features = ["env", "toml"] }
 neo4rs = "0.8.0"
 proptest = "1.10.0"

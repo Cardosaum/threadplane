@@ -1,3 +1,12 @@
+use core::error::Error;
+use std::{
+    env,
+    fs,
+    io,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use proptest::prelude::{any, Strategy};
 use proptest::{prop_assert, prop_assert_eq};
 use rstest::rstest;
@@ -5,9 +14,10 @@ use uuid::Uuid;
 
 use crate::{
     build_info, compare_build_info, default_config_path, default_system_config_path,
-    epic_entity_ref, normalize_task_labels, normalize_task_owner, note_entity_ref,
-    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref,
-    EntityRef, EventKind, TaskPriority, ThreadplaneConfig,
+    discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_path,
+    normalize_task_labels, normalize_task_owner, note_entity_ref, parse_entity_ref,
+    relation_type, scope_summary, service_snapshot, task_entity_ref, EntityRef, EventKind,
+    TaskPriority, ThreadplaneConfig, ENV_PREFIX,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -174,6 +184,53 @@ fn threadplane_config_defaults_match_local_poc_expectations() {
     assert_eq!(config.server.neo4j_user, None);
 }
 
+#[test]
+fn discover_threadplane_config_prefers_explicit_path() {
+    let explicit_path = PathBuf::from("/tmp/threadplane-explicit.toml");
+    let discovery = discover_threadplane_config(Some(explicit_path.as_path()));
+
+    assert_eq!(discovery.explicit_override, Some(explicit_path.clone()));
+    assert_eq!(discovery.selected_path, Some(explicit_path.clone()));
+    assert_eq!(discovery.search_order, vec![explicit_path]);
+    assert_eq!(discovery.env_prefix, ENV_PREFIX);
+}
+
+#[test]
+fn load_threadplane_config_with_path_merges_toml_over_defaults() -> Result<(), Box<dyn Error>> {
+    let config_dir = temp_config_dir();
+    let config_path = config_dir.join("config.toml");
+    let config_body = r#"
+[cli]
+url = "http://127.0.0.1:4123"
+
+[server]
+bind = "127.0.0.1:4321"
+default_lease_seconds = 42
+"#;
+    fs::create_dir_all(&config_dir)?;
+    fs::write(&config_path, config_body)?;
+
+    let loaded = load_threadplane_config_with_path(Some(config_path.as_path()))?;
+
+    if loaded.config.cli.url != "http://127.0.0.1:4123" {
+        return Err(Box::new(io::Error::other("unexpected cli.url")));
+    }
+    if loaded.config.server.bind != "127.0.0.1:4321" {
+        return Err(Box::new(io::Error::other("unexpected server.bind")));
+    }
+    if loaded.config.server.default_lease_seconds != 42 {
+        return Err(Box::new(io::Error::other(
+            "unexpected server.default_lease_seconds",
+        )));
+    }
+    if loaded.discovery.selected_path != Some(config_path) {
+        return Err(Box::new(io::Error::other("unexpected selected_path")));
+    }
+
+    fs::remove_dir_all(config_dir)?;
+    Ok(())
+}
+
 #[rstest]
 #[case(vec![" Workflow ".to_owned(), "agent".to_owned(), "workflow".to_owned()], vec!["agent".to_owned(), "workflow".to_owned()])]
 #[case(vec![String::new(), "   ".to_owned()], Vec::<String>::new())]
@@ -241,4 +298,12 @@ proptest::proptest! {
         prop_assert!(!normalized.ends_with('_'));
         prop_assert!(!normalized.contains("__"));
     }
+}
+
+fn temp_config_dir() -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    env::temp_dir().join(format!("threadplane-core-config-{timestamp}"))
 }

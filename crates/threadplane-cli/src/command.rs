@@ -4,7 +4,7 @@
 )]
 
 use alloc::collections::BTreeSet;
-use std::{env, path::PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use reqwest::blocking::Client;
@@ -14,12 +14,13 @@ use snafu::ResultExt as _;
 use uuid::Uuid;
 
 use threadplane_core::{
-    compare_build_info, default_config_path, default_system_config_path, normalize_task_labels,
-    normalize_task_owner, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, BuildComparison,
-    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskContext,
-    TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
-    ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest, ProjectionStatus, SERVICE_NAME,
+    compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
+    AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimTaskRequest,
+    CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest, CreateNoteRequest,
+    CreateXanaduLinkRequest, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
+    ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata,
+    TaskPriority, TaskRecord, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
+    SERVICE_NAME,
 };
 
 use crate::{
@@ -617,7 +618,12 @@ enum TaskDependencyViewKind {
     Blocks,
 }
 
-pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> Result<()> {
+pub(crate) fn execute(
+    cli: Cli,
+    config: &ThreadplaneConfig,
+    discovery: &ConfigDiscovery,
+    client: &Client,
+) -> Result<()> {
     let Cli {
         command: root_command,
         server: server_override,
@@ -629,7 +635,7 @@ pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> 
 
     match root_command {
         Command::Build(build_command) => handle_build(client, &server, &build_command)?,
-        Command::Config(config_command) => handle_config(&config_command, config)?,
+        Command::Config(config_command) => handle_config(&config_command, config, discovery)?,
         Command::Epic(epic_command) => {
             handle_epic(client, &server, idempotency_key, epic_command)?;
         }
@@ -693,28 +699,21 @@ fn handle_epic(
     }
 }
 
-fn handle_config(command: &ConfigCommand, config: &ThreadplaneConfig) -> Result<()> {
+fn handle_config(
+    command: &ConfigCommand,
+    config: &ThreadplaneConfig,
+    discovery: &ConfigDiscovery,
+) -> Result<()> {
     match command.command {
         ConfigSubcommand::Show => {
-            let env_override = env::var("THREADPLANE_CONFIG")
-                .ok()
-                .filter(|value| !value.is_empty());
-            let search_order = env_override.as_ref().map_or_else(
-                || {
-                    vec![
-                        default_config_path().display().to_string(),
-                        default_system_config_path().display().to_string(),
-                    ]
-                },
-                |override_path| vec![override_path.clone()],
-            );
-
             let payload = json!({
                 "config": config,
                 "discovery": {
-                    "search_order": search_order,
-                    "env_override": env_override,
-                    "env_prefix": "THREADPLANE__",
+                    "search_order": discovery.search_order,
+                    "selected_path": discovery.selected_path,
+                    "explicit_override": discovery.explicit_override,
+                    "env_override": discovery.env_override,
+                    "env_prefix": discovery.env_prefix,
                 }
             });
             print_value(&payload)
