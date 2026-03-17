@@ -75,7 +75,7 @@ pub(crate) enum CliError {
 
     #[snafu(display("{method} {url} returned {status}: {body}"))]
     NonSuccessStatus {
-        method: &'static str,
+        method: String,
         url: String,
         status: reqwest::StatusCode,
         body: String,
@@ -85,7 +85,7 @@ pub(crate) enum CliError {
 
     #[snafu(display("{method} {url} failed: {source}"))]
     RequestSend {
-        method: &'static str,
+        method: String,
         url: String,
         source: reqwest::Error,
         #[snafu(implicit)]

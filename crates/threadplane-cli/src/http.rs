@@ -3,7 +3,10 @@
     reason = "HTTP helpers are crate-local adapters with explicit visibility."
 )]
 
-use reqwest::blocking::{Client, Response};
+use reqwest::{
+    blocking::{Client, RequestBuilder, Response},
+    Method,
+};
 use serde::{de::DeserializeOwned, Serialize};
 use snafu::{ensure, IntoError as _, ResultExt as _};
 
@@ -14,88 +17,174 @@ use crate::error::{
 };
 use threadplane_core::{compare_build_info, BuildComparison, ServiceSnapshot};
 
+struct ApiRequest<'request, Body> {
+    body: Option<&'request Body>,
+    idempotency_key: Option<&'request str>,
+    method: Method,
+    path: &'request str,
+    server: &'request str,
+}
+
+impl<'request> ApiRequest<'request, ()> {
+    const fn get(server: &'request str, path: &'request str) -> Self {
+        Self {
+            body: None,
+            idempotency_key: None,
+            method: Method::GET,
+            path,
+            server,
+        }
+    }
+}
+
+impl<'request, Body> ApiRequest<'request, Body> {
+    const fn patch(server: &'request str, path: &'request str, body: &'request Body) -> Self {
+        Self::with_body(Method::PATCH, server, path, body)
+    }
+
+    const fn post(server: &'request str, path: &'request str, body: &'request Body) -> Self {
+        Self::with_body(Method::POST, server, path, body)
+    }
+
+    const fn put(server: &'request str, path: &'request str, body: &'request Body) -> Self {
+        Self::with_body(Method::PUT, server, path, body)
+    }
+
+    fn request_builder(&self, client: &Client) -> RequestBuilder
+    where
+        Body: Serialize,
+    {
+        let request_url = self.request_url();
+        let mut request_builder = client.request(self.method.clone(), request_url);
+
+        if let Some(body) = self.body {
+            request_builder = request_builder.json(body);
+        }
+        if let Some(idempotency_key) = self.idempotency_key {
+            request_builder = request_builder.header("Idempotency-Key", idempotency_key);
+        }
+
+        request_builder
+    }
+
+    fn request_url(&self) -> String {
+        url(self.server, self.path)
+    }
+
+    const fn with_body(
+        method: Method,
+        server: &'request str,
+        path: &'request str,
+        body: &'request Body,
+    ) -> Self {
+        Self {
+            body: Some(body),
+            idempotency_key: None,
+            method,
+            path,
+            server,
+        }
+    }
+
+    const fn with_idempotency_key(mut self, idempotency_key: Option<&'request str>) -> Self {
+        self.idempotency_key = idempotency_key;
+        self
+    }
+}
+
 pub(crate) fn build_http_client() -> Result<Client> {
     Client::builder().build().context(HttpClientBuild)
 }
 
-pub(crate) fn get_json<T: DeserializeOwned>(
-    client: &Client,
-    server: &str,
-    path: &str,
-) -> Result<T> {
-    let request_url = url(server, path);
-    let response = client.get(&request_url).send().context(RequestSend {
-        method: "GET",
-        url: request_url.clone(),
-    })?;
-    parse_response(client, "GET", server, request_url, response)
+pub(crate) fn get_json<T>(client: &Client, server: &str, path: &str) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let request = ApiRequest::<()>::get(server, path);
+    send_json(client, &request)
 }
 
-pub(crate) fn post_json<B: Serialize, T: DeserializeOwned>(
+pub(crate) fn patch_json<B, T>(
     client: &Client,
     server: &str,
     path: &str,
     body: &B,
     idempotency_key: Option<&str>,
-) -> Result<T> {
-    let request_url = url(server, path);
-    let mut request_builder = client.post(&request_url).json(body);
-    if let Some(command_idempotency_key) = idempotency_key {
-        request_builder =
-            request_builder.header("Idempotency-Key", command_idempotency_key);
-    }
-    let response = request_builder.send().context(RequestSend {
-        method: "POST",
-        url: request_url.clone(),
-    })?;
-    parse_response(client, "POST", server, request_url, response)
+) -> Result<T>
+where
+    B: Serialize,
+    T: DeserializeOwned,
+{
+    let request = ApiRequest::patch(server, path, body).with_idempotency_key(idempotency_key);
+    send_json(client, &request)
 }
 
-pub(crate) fn patch_json<B: Serialize, T: DeserializeOwned>(
+pub(crate) fn post_json<B, T>(
     client: &Client,
     server: &str,
     path: &str,
     body: &B,
     idempotency_key: Option<&str>,
-) -> Result<T> {
-    let request_url = url(server, path);
-    let mut request_builder = client.patch(&request_url).json(body);
-    if let Some(command_idempotency_key) = idempotency_key {
-        request_builder = request_builder.header("Idempotency-Key", command_idempotency_key);
-    }
-    let response = request_builder.send().context(RequestSend {
-        method: "PATCH",
-        url: request_url.clone(),
-    })?;
-    parse_response(client, "PATCH", server, request_url, response)
+) -> Result<T>
+where
+    B: Serialize,
+    T: DeserializeOwned,
+{
+    let request = ApiRequest::post(server, path, body).with_idempotency_key(idempotency_key);
+    send_json(client, &request)
 }
 
-pub(crate) fn put_json<B: Serialize, T: DeserializeOwned>(
+pub(crate) fn put_json<B, T>(
     client: &Client,
     server: &str,
     path: &str,
     body: &B,
     idempotency_key: Option<&str>,
-) -> Result<T> {
-    let request_url = url(server, path);
-    let mut request_builder = client.put(&request_url).json(body);
-    if let Some(command_idempotency_key) = idempotency_key {
-        request_builder = request_builder.header("Idempotency-Key", command_idempotency_key);
-    }
-    let response = request_builder.send().context(RequestSend {
-        method: "PUT",
-        url: request_url.clone(),
-    })?;
-    parse_response(client, "PUT", server, request_url, response)
+) -> Result<T>
+where
+    B: Serialize,
+    T: DeserializeOwned,
+{
+    let request = ApiRequest::put(server, path, body).with_idempotency_key(idempotency_key);
+    send_json(client, &request)
 }
 
-fn parse_response<T: DeserializeOwned>(
+fn send_json<T, Body>(client: &Client, request: &ApiRequest<'_, Body>) -> Result<T>
+where
+    Body: Serialize,
+    T: DeserializeOwned,
+{
+    let response = send_request(client, request)?;
+    parse_json_response(
+        client,
+        request.server,
+        &request.method,
+        request.request_url(),
+        response,
+    )
+}
+
+fn send_request<Body>(client: &Client, request: &ApiRequest<'_, Body>) -> Result<Response>
+where
+    Body: Serialize,
+{
+    let request_url = request.request_url();
+    request.request_builder(client).send().context(RequestSend {
+        method: request.method.to_string(),
+        url: request_url,
+    })
+}
+
+fn parse_json_response<T>(
     client: &Client,
-    method: &'static str,
     server: &str,
+    method: &Method,
     url: String,
     response: Response,
-) -> Result<T> {
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
     let status = response.status();
     let body = response
         .text()
@@ -103,7 +192,7 @@ fn parse_response<T: DeserializeOwned>(
     ensure!(
         status.is_success(),
         NonSuccessStatus {
-            method,
+            method: method.to_string(),
             url,
             status,
             body,
@@ -168,4 +257,24 @@ fn root_url(server: &str) -> String {
 
 fn url(server: &str, path: &str) -> String {
     format!("{}{}", server.trim_end_matches('/'), path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{url, ApiRequest};
+
+    #[test]
+    fn api_request_builds_urls_without_double_slashes() {
+        let body = serde_json::json!({});
+        let request = ApiRequest::post("http://127.0.0.1:4000/", "/v1/tasks", &body);
+        assert_eq!(request.request_url(), "http://127.0.0.1:4000/v1/tasks");
+    }
+
+    #[test]
+    fn url_trims_the_server_suffix_only() {
+        assert_eq!(
+            url("http://127.0.0.1:4000/", "/v1/tasks"),
+            "http://127.0.0.1:4000/v1/tasks"
+        );
+    }
 }
