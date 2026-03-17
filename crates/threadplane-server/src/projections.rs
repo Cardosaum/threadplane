@@ -32,7 +32,7 @@ pub(crate) async fn fetch_task_relations(
                 MATCH (task:Entity {entity_ref: $task_ref})
                 OPTIONAL MATCH (task)-[rel]-(other:Entity)
                 RETURN
-                  type(rel) AS relation,
+                  DISTINCT type(rel) AS relation,
                   CASE
                     WHEN rel IS NULL THEN NULL
                     WHEN startNode(rel).entity_ref = $task_ref THEN 'outgoing'
@@ -80,7 +80,13 @@ pub(crate) async fn fetch_task_relations(
         }
     }
 
-    Ok(relations)
+    Ok(deduplicate_graph_relations(relations))
+}
+
+pub(crate) fn deduplicate_graph_relations(mut relations: Vec<GraphRelation>) -> Vec<GraphRelation> {
+    relations.sort_unstable();
+    relations.dedup();
+    relations
 }
 
 pub(crate) async fn project_note(graph: &Graph, note: &NoteRecord) -> ServerResult<()> {

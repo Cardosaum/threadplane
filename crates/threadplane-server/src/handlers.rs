@@ -5,9 +5,10 @@
 
 use axum::{
     extract::{Path, Query, State},
+    http::HeaderMap,
     Json,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::error;
@@ -17,6 +18,10 @@ use crate::{
     app::AppState,
     build_info::current_build_info,
     error::{AppResult, ServerResult, ThreadplaneServerError},
+    idempotency::{
+        begin_idempotent_command, complete_idempotent_command, CommandExecution,
+        IdempotencyContext, IDEMPOTENCY_KEY_HEADER,
+    },
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
     projections::{
         fetch_task_relations, project_claim, project_epic, project_link, project_note,
@@ -78,6 +83,147 @@ fn with_projection_status(
     Ok(payload)
 }
 
+const fn success<T>(data: T) -> Json<ApiEnvelope<T>> {
+    Json(ApiEnvelope {
+        data,
+        ok: true,
+        receipt: None,
+    })
+}
+
+const fn success_with_receipt<T>(
+    data: T,
+    receipt: Option<threadplane_core::CommandReceipt>,
+) -> Json<ApiEnvelope<T>> {
+    Json(ApiEnvelope {
+        data,
+        ok: true,
+        receipt,
+    })
+}
+
+fn idempotency_key(headers: &HeaderMap) -> ServerResult<Option<&str>> {
+    headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .map(|value| {
+            value.to_str().map_err(|_invalid_header| {
+                ThreadplaneServerError::bad_request(
+                    "idempotency key must be a valid ASCII-compatible header value",
+                )
+            })
+        })
+        .transpose()
+}
+
+async fn persist_task_update(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    request: &UpdateTaskRequest,
+    current_transclusion_id: Option<Uuid>,
+    updated_at: DateTime<Utc>,
+) -> ServerResult<Option<Uuid>> {
+    if let Some(transclusion_id) = current_transclusion_id {
+        update_transclusion_group(
+            tx,
+            transclusion_id,
+            &request.workspace,
+            &request.actor,
+            &request.title,
+            &request.details,
+            updated_at,
+        )
+        .await?;
+        sync_transclusion_members(tx, transclusion_id).await?;
+        sqlx::query(
+            "
+            UPDATE tasks
+            SET epic_id = COALESCE($2, epic_id),
+                priority = $3,
+                owner = $4,
+                labels = $5,
+                updated_at = $6
+            WHERE task_id = $1
+            ",
+        )
+        .bind(request.task_id)
+        .bind(request.epic_id)
+        .bind(request.metadata.priority.to_string())
+        .bind(request.metadata.owner.clone())
+        .bind(request.metadata.labels.clone())
+        .bind(updated_at)
+        .execute(&mut **tx)
+        .await?;
+        return Ok(Some(transclusion_id));
+    }
+
+    sqlx::query(
+        "
+        UPDATE tasks
+        SET title = $2,
+            details = $3,
+            epic_id = COALESCE($4, epic_id),
+            priority = $5,
+            owner = $6,
+            labels = $7,
+            updated_at = $8
+        WHERE task_id = $1
+        ",
+    )
+    .bind(request.task_id)
+    .bind(&request.title)
+    .bind(&request.details)
+    .bind(request.epic_id)
+    .bind(request.metadata.priority.to_string())
+    .bind(request.metadata.owner.clone())
+    .bind(request.metadata.labels.clone())
+    .bind(updated_at)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(None)
+}
+
+async fn ensure_task_is_unclaimed(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: Uuid,
+) -> ServerResult<()> {
+    let active_claim = fetch_active_claim_tx(tx, task_id).await?;
+    if let Some(claim) = active_claim {
+        return Err(ThreadplaneServerError::conflict(format!(
+            "task already claimed by {} until {}",
+            claim.actor,
+            claim.expires_at.to_rfc3339()
+        )));
+    }
+
+    Ok(())
+}
+
+fn build_xanadu_request_payload(request: &CreateXanaduLinkRequest) -> Value {
+    json!({
+        "workspace": request.workspace,
+        "actor": request.actor,
+        "from": request.from,
+        "to": request.to,
+        "transclusion_id": null,
+        "merged_group_id": null,
+    })
+}
+
+fn build_xanadu_event_payload(
+    request: &CreateXanaduLinkRequest,
+    canonical_group_id: Uuid,
+    merged_group_id: Option<Uuid>,
+) -> Value {
+    json!({
+        "workspace": request.workspace,
+        "actor": request.actor,
+        "from": request.from,
+        "to": request.to,
+        "transclusion_id": canonical_group_id,
+        "merged_group_id": merged_group_id,
+    })
+}
+
 pub(crate) async fn root() -> Json<ServiceSnapshot> {
     Json(service_snapshot(current_build_info()))
 }
@@ -100,17 +246,37 @@ pub(crate) async fn scope(State(state): State<AppState>) -> ServerResult<Json<Va
 
 pub(crate) async fn projection_status(State(state): State<AppState>) -> AppResult<ProjectionStatus> {
     let data = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn create_epic(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateEpicRequest>,
 ) -> AppResult<EpicRecord> {
     let mut tx = state.pool().begin().await?;
     let epic_id = Uuid::new_v4();
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<EpicRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.author,
+            command_kind: "create_epic",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let event_id = append_event(
         &mut tx,
         &request.workspace,
@@ -145,19 +311,16 @@ pub(crate) async fn create_epic(
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
-
+    let record = EpicRecord::from(fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
+            .await?;
     tx.commit().await?;
-
-    let row = fetch_epic_by_id(state.pool(), epic_id).await?;
-    let record = EpicRecord::from(row);
     project_epic(state.graph(), &record)
         .await
         .map_err(ThreadplaneServerError::internal)?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn show_epic(
@@ -165,20 +328,37 @@ pub(crate) async fn show_epic(
     Path(epic_id): Path<Uuid>,
 ) -> AppResult<EpicRecord> {
     let row = fetch_epic_by_id(state.pool(), epic_id).await?;
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: EpicRecord::from(row),
-    }))
+    Ok(success(EpicRecord::from(row)))
 }
 
 pub(crate) async fn create_note(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> AppResult<NoteRecord> {
     let mut tx = state.pool().begin().await?;
     let note_id = Uuid::new_v4();
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<NoteRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.author,
+            command_kind: "create_note",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let event_id = append_event(
         &mut tx,
         &request.workspace,
@@ -214,11 +394,11 @@ pub(crate) async fn create_note(
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
-
+    let record = NoteRecord::from(fetch_note_by_id_tx(&mut tx, note_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
+            .await?;
     tx.commit().await?;
-
-    let row = fetch_note_by_id(state.pool(), note_id).await?;
-    let record = NoteRecord::from(row);
     project_note(state.graph(), &record)
         .await
         .map_err(|error| {
@@ -226,10 +406,7 @@ pub(crate) async fn create_note(
             ThreadplaneServerError::internal(error)
         })?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn show_note(
@@ -237,20 +414,37 @@ pub(crate) async fn show_note(
     Path(note_id): Path<Uuid>,
 ) -> AppResult<NoteRecord> {
     let row = fetch_note_by_id(state.pool(), note_id).await?;
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: NoteRecord::from(row),
-    }))
+    Ok(success(NoteRecord::from(row)))
 }
 
 pub(crate) async fn update_note(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<UpdateNoteRequest>,
 ) -> AppResult<NoteRecord> {
     let mut tx = state.pool().begin().await?;
-    let note = fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<NoteRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "update_note",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        updated_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
+    let note = fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?;
     append_event(
         &mut tx,
         &request.workspace,
@@ -292,7 +486,10 @@ pub(crate) async fn update_note(
         .await?;
         None
     };
-
+    let record = NoteRecord::from(fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at)
+            .await?;
     tx.commit().await?;
 
     if let Some(group_id) = transclusion_id {
@@ -300,21 +497,16 @@ pub(crate) async fn update_note(
             .await
             .map_err(ThreadplaneServerError::internal)?;
     } else {
-        let row = fetch_note_by_id(state.pool(), request.note_id).await?;
-        project_note(state.graph(), &NoteRecord::from(row))
+        project_note(state.graph(), &record)
             .await
             .map_err(ThreadplaneServerError::internal)?;
     }
-
-    let row = fetch_note_by_id(state.pool(), request.note_id).await?;
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: NoteRecord::from(row),
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn offer_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut request): Json<OfferTaskRequest>,
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
@@ -326,6 +518,25 @@ pub(crate) async fn offer_task(
     let task_id = Uuid::new_v4();
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<TaskRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.author,
+            command_kind: "offer_task",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let event_id = append_event(
         &mut tx,
         &request.workspace,
@@ -382,11 +593,11 @@ pub(crate) async fn offer_task(
         )
         .await?;
     }
-
+    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, task_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
+            .await?;
     tx.commit().await?;
-
-    let row = fetch_task_by_id(state.pool(), task_id).await?;
-    let record = TaskRecord::from(row);
     project_task_supporting_entities(&state, &record).await?;
     project_task(state.graph(), &record)
         .await
@@ -395,25 +606,42 @@ pub(crate) async fn offer_task(
             ThreadplaneServerError::internal(error)
         })?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn update_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut request): Json<UpdateTaskRequest>,
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
     let mut tx = state.pool().begin().await?;
+    let updated_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<TaskRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "update_task",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        updated_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
     }
-    let updated_at = Utc::now();
-    let payload = serde_json::to_value(&request)?;
     append_event(
         &mut tx,
         &request.workspace,
@@ -424,68 +652,12 @@ pub(crate) async fn update_task(
     )
     .await?;
 
-    let transclusion_id = if let Some(transclusion_id) = task.transclusion_id {
-        update_transclusion_group(
-            &mut tx,
-            transclusion_id,
-            &request.workspace,
-            &request.actor,
-            &request.title,
-            &request.details,
-            updated_at,
-        )
-        .await?;
-        sync_transclusion_members(&mut tx, transclusion_id).await?;
-        Some(transclusion_id)
-    } else {
-        sqlx::query(
-            "
-            UPDATE tasks
-            SET title = $2,
-                details = $3,
-                epic_id = COALESCE($4, epic_id),
-                priority = $5,
-                owner = $6,
-                labels = $7,
-                updated_at = $8
-            WHERE task_id = $1
-            ",
-        )
-        .bind(request.task_id)
-        .bind(&request.title)
-        .bind(&request.details)
-        .bind(request.epic_id)
-        .bind(request.metadata.priority.to_string())
-        .bind(request.metadata.owner.clone())
-        .bind(request.metadata.labels.clone())
-        .bind(updated_at)
-        .execute(&mut *tx)
-        .await?;
-        None
-    };
-
-    if transclusion_id.is_some() {
-        sqlx::query(
-            "
-            UPDATE tasks
-            SET epic_id = COALESCE($2, epic_id),
-                priority = $3,
-                owner = $4,
-                labels = $5,
-                updated_at = $6
-            WHERE task_id = $1
-            ",
-        )
-        .bind(request.task_id)
-        .bind(request.epic_id)
-        .bind(request.metadata.priority.to_string())
-        .bind(request.metadata.owner.clone())
-        .bind(request.metadata.labels.clone())
-        .bind(updated_at)
-        .execute(&mut *tx)
-        .await?;
-    }
-
+    let transclusion_id =
+        persist_task_update(&mut tx, &request, task.transclusion_id, updated_at).await?;
+    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at)
+            .await?;
     tx.commit().await?;
 
     if let Some(group_id) = transclusion_id {
@@ -493,43 +665,49 @@ pub(crate) async fn update_task(
             .await
             .map_err(ThreadplaneServerError::internal)?;
     } else {
-        let row = fetch_task_by_id(state.pool(), request.task_id).await?;
-        project_task(state.graph(), &TaskRecord::from(row))
+        project_task(state.graph(), &record)
             .await
             .map_err(ThreadplaneServerError::internal)?;
     }
-
-    let row = fetch_task_by_id(state.pool(), request.task_id).await?;
-    project_task_supporting_entities(&state, &TaskRecord::from(row.clone())).await?;
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: TaskRecord::from(row),
-    }))
+    project_task_supporting_entities(&state, &record).await?;
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn claim_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ClaimTaskRequest>,
 ) -> AppResult<TaskClaimRecord> {
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
     let mut tx = state.pool().begin().await?;
+    let claimed_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<TaskClaimRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "claim_task",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        claimed_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
 
     fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
 
-    let active_claim = fetch_active_claim_tx(&mut tx, request.task_id).await?;
-    if let Some(claim) = active_claim {
-        return Err(ThreadplaneServerError::conflict(format!(
-            "task already claimed by {} until {}",
-            claim.actor,
-            claim.expires_at.to_rfc3339()
-        )));
-    }
-
-    let claimed_at = Utc::now();
+    ensure_task_is_unclaimed(&mut tx, request.task_id).await?;
     let expires_at = calculate_claim_expiry(claimed_at, lease_seconds)
         .ok_or_else(|| ThreadplaneServerError::bad_request("lease expiration overflow"))?;
-    let payload = serde_json::to_value(&request)?;
     let event_id = append_event(
         &mut tx,
         &request.workspace,
@@ -569,20 +747,22 @@ pub(crate) async fn claim_task(
     .bind(claimed_at)
     .execute(&mut *tx)
     .await?;
-
-    tx.commit().await?;
-
+    let workspace = request.workspace.clone();
+    let actor = request.actor.clone();
     let record = TaskClaimRecord {
         claim_id,
         task_id: request.task_id,
-        workspace: request.workspace,
-        actor: request.actor,
+        workspace,
+        actor,
         event_id,
         claimed_at: claimed_at.to_rfc3339(),
         expires_at: expires_at.to_rfc3339(),
     };
-
-    let task = fetch_task_by_id(state.pool(), request.task_id).await?;
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, claimed_at)
+            .await?;
+    let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
+    tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
     project_task_supporting_entities(&state, &task_record).await?;
     project_task(state.graph(), &task_record)
@@ -595,19 +775,37 @@ pub(crate) async fn claim_task(
             ThreadplaneServerError::internal(error)
         })?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn release_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<ReleaseTaskRequest>,
 ) -> AppResult<TaskRecord> {
     let mut tx = state.pool().begin().await?;
-    fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     let released_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<TaskRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "release_task",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        released_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
+    fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     let claim = fetch_active_claim_tx(&mut tx, request.task_id)
         .await?
         .ok_or_else(|| {
@@ -620,8 +818,6 @@ pub(crate) async fn release_task(
             claim.actor
         )));
     }
-
-    let payload = serde_json::to_value(&request)?;
     append_event(
         &mut tx,
         &request.workspace,
@@ -656,28 +852,46 @@ pub(crate) async fn release_task(
     .bind(released_at)
     .execute(&mut *tx)
     .await?;
-
+    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, released_at)
+            .await?;
     tx.commit().await?;
-
-    let task = fetch_task_by_id(state.pool(), request.task_id).await?;
-    let record = TaskRecord::from(task);
     project_task_supporting_entities(&state, &record).await?;
     project_task(state.graph(), &record)
         .await
         .map_err(ThreadplaneServerError::internal)?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn complete_task(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CompleteTaskRequest>,
 ) -> AppResult<TaskRecord> {
     let mut tx = state.pool().begin().await?;
     let completed_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<TaskRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "complete_task",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        completed_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
 
     if let Some(claim) = fetch_active_claim_tx(&mut tx, request.task_id).await? {
         if claim.actor != request.actor {
@@ -687,8 +901,6 @@ pub(crate) async fn complete_task(
             )));
         }
     }
-
-    let payload = serde_json::to_value(&request)?;
     append_event(
         &mut tx,
         &request.workspace,
@@ -725,27 +937,46 @@ pub(crate) async fn complete_task(
     .bind(completed_at)
     .execute(&mut *tx)
     .await?;
-
+    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, completed_at)
+            .await?;
     tx.commit().await?;
-
-    let record = TaskRecord::from(fetch_task_by_id(state.pool(), request.task_id).await?);
     project_task_supporting_entities(&state, &record).await?;
     project_task(state.graph(), &record)
         .await
         .map_err(ThreadplaneServerError::internal)?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn add_task_dependency(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<AddTaskDependencyRequest>,
 ) -> AppResult<Value> {
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<Value>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "add_task_dependency",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     append_task_dependency(
         &mut tx,
         &request.workspace,
@@ -755,6 +986,13 @@ pub(crate) async fn add_task_dependency(
         created_at,
     )
     .await?;
+    let data = json!({
+        "task_id": request.task_id,
+        "depends_on_task_id": request.depends_on_task_id,
+        "relation": DEPENDS_ON_RELATION,
+    });
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &data, created_at).await?;
     tx.commit().await?;
 
     project_task_dependency_by_id(
@@ -766,23 +1004,36 @@ pub(crate) async fn add_task_dependency(
     .await
     .map_err(ThreadplaneServerError::internal)?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: json!({
-            "task_id": request.task_id,
-            "depends_on_task_id": request.depends_on_task_id,
-            "relation": DEPENDS_ON_RELATION,
-        }),
-    }))
+    Ok(success_with_receipt(data, receipt))
 }
 
 pub(crate) async fn add_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<AddLinkRequest>,
 ) -> AppResult<LinkRecord> {
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
+    let pending_receipt = match begin_idempotent_command::<LinkRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "add_link",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let event_id = append_event(
         &mut tx,
         &request.workspace,
@@ -821,9 +1072,6 @@ pub(crate) async fn add_link(
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
-
-    tx.commit().await?;
-
     let record = LinkRecord {
         link_id,
         event_id,
@@ -836,6 +1084,10 @@ pub(crate) async fn add_link(
         transclusion_id: None,
         created_at: created_at.to_rfc3339(),
     };
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
+            .await?;
+    tx.commit().await?;
 
     project_link(state.graph(), &record)
         .await
@@ -844,34 +1096,48 @@ pub(crate) async fn add_link(
             ThreadplaneServerError::internal(error)
         })?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: record,
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn add_xanadu_link(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<CreateXanaduLinkRequest>,
 ) -> AppResult<LinkRecord> {
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
+    let request_payload = build_xanadu_request_payload(&request);
+    let pending_receipt = match begin_idempotent_command::<LinkRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.actor,
+            command_kind: "add_xanadu_link",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &request_payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
     let xanadu_group = prepare_xanadu_group(&mut tx, &request, created_at).await?;
-
-    let payload = json!({
-        "workspace": request.workspace,
-        "actor": request.actor,
-        "from": request.from,
-        "to": request.to,
-        "transclusion_id": xanadu_group.canonical_group_id,
-        "merged_group_id": xanadu_group.merged_group_id,
-    });
+    let event_payload = build_xanadu_event_payload(
+        &request,
+        xanadu_group.canonical_group_id,
+        xanadu_group.merged_group_id,
+    );
     let event_id = append_event(
         &mut tx,
         &request.workspace,
         &request.actor,
         EventKind::XanaduLinked,
-        &payload,
+        &event_payload,
         created_at,
     )
     .await?;
@@ -905,7 +1171,21 @@ pub(crate) async fn add_xanadu_link(
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
-
+    let record = LinkRecord {
+        link_id,
+        event_id,
+        workspace: request.workspace,
+        actor: request.actor,
+        from: request.from,
+        to: request.to,
+        relation: XANADU_RELATION.to_owned(),
+        is_xanadu: true,
+        transclusion_id: Some(xanadu_group.canonical_group_id),
+        created_at: created_at.to_rfc3339(),
+    };
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
+            .await?;
     tx.commit().await?;
 
     reproject_transclusion_group(
@@ -916,21 +1196,7 @@ pub(crate) async fn add_xanadu_link(
     .await
     .map_err(ThreadplaneServerError::internal)?;
 
-    Ok(Json(ApiEnvelope {
-        ok: true,
-        data: LinkRecord {
-            link_id,
-            event_id,
-            workspace: request.workspace,
-            actor: request.actor,
-            from: request.from,
-            to: request.to,
-            relation: XANADU_RELATION.to_owned(),
-            is_xanadu: true,
-            transclusion_id: Some(xanadu_group.canonical_group_id),
-            created_at: created_at.to_rfc3339(),
-        },
-    }))
+    Ok(success_with_receipt(record, receipt))
 }
 
 pub(crate) async fn list_events(
@@ -941,7 +1207,7 @@ pub(crate) async fn list_events(
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_event_rows_for_workspace(state.pool(), &workspace, limit).await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn list_epics(
@@ -950,7 +1216,7 @@ pub(crate) async fn list_epics(
 ) -> AppResult<Vec<EpicRecord>> {
     let rows = fetch_epic_rows_for_workspace(state.pool(), &workspace).await?;
     let data = rows.into_iter().map(EpicRecord::from).collect();
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn list_tasks(
@@ -974,7 +1240,7 @@ pub(crate) async fn list_tasks(
     .await?;
     let limited_rows = truncate_results(rows, limit);
     let data = build_task_list_entries(state.pool(), limited_rows).await?;
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn list_open_tasks(
@@ -992,7 +1258,7 @@ pub(crate) async fn list_open_tasks(
     )
     .await?;
     let data = build_task_list_entries(state.pool(), rows).await?;
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn show_task(
@@ -1000,7 +1266,7 @@ pub(crate) async fn show_task(
     Path(task_id): Path<Uuid>,
 ) -> AppResult<TaskRecord> {
     let data = TaskRecord::from(fetch_task_by_id(state.pool(), task_id).await?);
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn task_context(
@@ -1028,7 +1294,7 @@ pub(crate) async fn task_context(
         relations,
     };
 
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 pub(crate) async fn task_dag(
@@ -1044,7 +1310,7 @@ pub(crate) async fn task_dag(
         dependents: fetch_dependent_chain(state.pool(), task_id).await?,
     };
 
-    Ok(Json(ApiEnvelope { ok: true, data }))
+    Ok(success(data))
 }
 
 #[inline]

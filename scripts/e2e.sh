@@ -252,6 +252,29 @@ compact_ready_queue="$(
 [[ "$compact_ready_queue" == *"labels=agent,workflow"* ]]
 [[ "$compact_ready_queue" != *"Archive stale benchmark notes"* ]]
 
+idempotent_note_json="$(
+    cargo run -q -p threadplane-cli -- \
+        --idempotency-key "note-seed-${WORKSPACE}" \
+        note add \
+        --workspace "$WORKSPACE" \
+        --author agent-c \
+        --title "Idempotent note seed" \
+        --body "This note should only be recorded once."
+)"
+replayed_idempotent_note_json="$(
+    cargo run -q -p threadplane-cli -- \
+        --idempotency-key "note-seed-${WORKSPACE}" \
+        note add \
+        --workspace "$WORKSPACE" \
+        --author agent-c \
+        --title "Idempotent note seed" \
+        --body "This note should only be recorded once."
+)"
+[[ "$(jq -r '.data.note_id' <<<"$idempotent_note_json")" == "$(jq -r '.data.note_id' <<<"$replayed_idempotent_note_json")" ]]
+[[ "$(jq -r '.receipt.replayed' <<<"$idempotent_note_json")" == "false" ]]
+[[ "$(jq -r '.receipt.replayed' <<<"$replayed_idempotent_note_json")" == "true" ]]
+[[ "$(jq -r '.receipt.idempotency_key' <<<"$replayed_idempotent_note_json")" == "note-seed-${WORKSPACE}" ]]
+
 note_json="$(
     cargo run -q -p threadplane-cli -- \
         note add \
@@ -451,6 +474,7 @@ events_json="$(
 [[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_completed" ]]
 [[ "$(jq -r '.data[] | select(.kind == "task_dependency_declared") | .kind' <<<"$events_json" | head -n1)" == "task_dependency_declared" ]]
 [[ "$(jq -r '.data[] | select(.kind == "epic_recorded") | .kind' <<<"$events_json" | head -n1)" == "epic_recorded" ]]
+[[ "$(jq '[.data[] | select(.kind == "note_recorded")] | length' <<<"$events_json")" == "2" ]]
 
 for _attempt in $(seq 1 20); do
     projection_status_json="$(

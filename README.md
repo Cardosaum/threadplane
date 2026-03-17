@@ -84,6 +84,7 @@ cargo run -p threadplane-cli -- build compare
 `scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
 It also includes the persisted graph replay watermark and pending projection count, and `projection status` exposes the same data directly when you want an operational read instead of the broader product summary.
 If the local CLI build and running server build drift apart, `scope` prints a warning on stderr and `build compare` shows the full typed diff.
+Mutating commands also accept a global `--idempotency-key <key>`, which maps to durable command receipts in PostgreSQL so retries can safely replay the original result instead of duplicating writes.
 
 5. Run the full smoke test if you want the fastest proof that everything works:
 
@@ -253,6 +254,7 @@ Global options:
 
 - `--config <path>` to load a specific config file
 - `--server <url>` to override the configured API base URL
+- `--idempotency-key <key>` to make a mutating command safely retryable
 
 ## Configuration
 
@@ -330,9 +332,11 @@ This is a POC, not a finished platform. The current implementation proves the sh
 - end-to-end CLI flow works
 - first-class epics and task DAGs work
 - event log is durable in PostgreSQL
+- mutating commands support idempotency keys and durable command receipts
 - graph projection is live in Neo4j
+- projection replay and recovery survive restarts
 - task claims are lease-backed
 - task release/complete lifecycle is live
 - Xanadu linking propagates content between note/task pairs
 
-The next layers are production concerns such as auth, idempotency, richer task lifecycle, replay workers, and MCP-facing ergonomics.
+The next layers are production concerns such as auth, richer multi-workspace policy, benchmark and stress tooling, and MCP-facing ergonomics.

@@ -4,6 +4,7 @@ pub(crate) mod app;
 pub(crate) mod build_info;
 pub(crate) mod error;
 pub(crate) mod handlers;
+pub(crate) mod idempotency;
 pub(crate) mod lifecycle;
 pub(crate) mod migration;
 pub(crate) mod projections;

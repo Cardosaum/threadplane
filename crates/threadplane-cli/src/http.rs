@@ -36,16 +36,18 @@ pub(crate) fn post_json<B: Serialize, T: DeserializeOwned>(
     server: &str,
     path: &str,
     body: &B,
+    idempotency_key: Option<&str>,
 ) -> Result<T> {
     let request_url = url(server, path);
-    let response = client
-        .post(&request_url)
-        .json(body)
-        .send()
-        .context(RequestSend {
-            method: "POST",
-            url: request_url.clone(),
-        })?;
+    let mut request_builder = client.post(&request_url).json(body);
+    if let Some(command_idempotency_key) = idempotency_key {
+        request_builder =
+            request_builder.header("Idempotency-Key", command_idempotency_key);
+    }
+    let response = request_builder.send().context(RequestSend {
+        method: "POST",
+        url: request_url.clone(),
+    })?;
     parse_response(client, "POST", server, request_url, response)
 }
 

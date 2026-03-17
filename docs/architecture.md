@@ -48,7 +48,7 @@ Why PostgreSQL:
 Expected tables in the first real implementation:
 
 - `events`
-- `commands`
+- `command_receipts`
 - `workspaces`
 - `actors`
 - `task_leases`

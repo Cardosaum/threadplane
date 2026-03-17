@@ -45,6 +45,7 @@ cargo run -p threadplane-cli -- build compare
 The scope payload includes the running server build metadata, including dirty-worktree state, which is useful when you are dogfooding locally and want to catch stale or misleading background processes quickly.
 It also embeds the graph replay watermark and pending-event count, while `projection status` gives you a dedicated operational read for the Neo4j catch-up worker.
 If the CLI and server were built from different commits or worktree states, `scope` warns on stderr and `build compare` prints the full comparison payload.
+When you need retry-safe mutations while scripting or dogfooding, add `--idempotency-key <key>` to the CLI and threadplane will replay the original successful result instead of writing a duplicate command.
 
 For repeated local development, you can also use the dogfooding bootstrap flow:
 
@@ -115,6 +116,7 @@ Create a note:
 
 ```bash
 cargo run -p threadplane-cli -- note add \
+  --idempotency-key lease-note-001 \
   --workspace shared-lab \
   --author agent-a \
   --title "Lease design note" \
@@ -191,6 +193,7 @@ That script boots the local stack, starts the API server, runs the CLI against i
 - ready-only task listing
 - task offers
 - note creation
+- idempotent note creation and durable command receipts
 - Xanadu linking
 - bidirectional content sync
 - lease-backed claiming

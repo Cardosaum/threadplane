@@ -90,6 +90,15 @@ pub struct ProjectionStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandReceipt {
+    pub command_id: Uuid,
+    pub command_kind: String,
+    pub idempotency_key: String,
+    pub recorded_at: String,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNoteRequest {
     pub author: String,
     pub body: String,
@@ -340,7 +349,7 @@ pub struct TaskDag {
     pub task: TaskSummary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GraphRelation {
     pub body: Option<String>,
     pub direction: String,
@@ -366,6 +375,8 @@ pub struct TaskContext {
 pub struct ApiEnvelope<T> {
     pub data: T,
     pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<CommandReceipt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]

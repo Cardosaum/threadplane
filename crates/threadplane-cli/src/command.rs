@@ -47,6 +47,12 @@ pub(crate) struct Cli {
 
     #[arg(
         long,
+        help = "Optional idempotency key for mutating commands. Batch commands derive child keys automatically."
+    )]
+    idempotency_key: Option<String>,
+
+    #[arg(
+        long,
         help = "HTTP base URL for threadplane-server. Overrides cli.url from config."
     )]
     server: Option<String>,
@@ -612,18 +618,35 @@ enum TaskDependencyViewKind {
 }
 
 pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> Result<()> {
-    let server = cli.server.unwrap_or_else(|| config.cli.url.clone());
+    let Cli {
+        command: root_command,
+        server: server_override,
+        idempotency_key: command_idempotency_key,
+        ..
+    } = cli;
+    let server = server_override.unwrap_or_else(|| config.cli.url.clone());
+    let idempotency_key = command_idempotency_key.as_deref();
 
-    match cli.command {
-        Command::Build(command) => handle_build(client, &server, &command)?,
-        Command::Config(command) => handle_config(&command, config)?,
-        Command::Epic(command) => handle_epic(client, &server, command)?,
-        Command::Events(command) => handle_events(client, &server, command)?,
-        Command::Link(command) => handle_link(client, &server, command)?,
-        Command::Note(command) => handle_note(client, &server, command)?,
-        Command::Projection(command) => handle_projection(client, &server, &command)?,
+    match root_command {
+        Command::Build(build_command) => handle_build(client, &server, &build_command)?,
+        Command::Config(config_command) => handle_config(&config_command, config)?,
+        Command::Epic(epic_command) => {
+            handle_epic(client, &server, idempotency_key, epic_command)?;
+        }
+        Command::Events(events_command) => handle_events(client, &server, events_command)?,
+        Command::Link(link_command) => {
+            handle_link(client, &server, idempotency_key, link_command)?;
+        }
+        Command::Note(note_command) => {
+            handle_note(client, &server, idempotency_key, note_command)?;
+        }
+        Command::Projection(projection_command) => {
+            handle_projection(client, &server, &projection_command)?;
+        }
         Command::Scope => handle_scope(client, &server)?,
-        Command::Task(command) => handle_task(client, &server, command)?,
+        Command::Task(task_command) => {
+            handle_task(client, &server, idempotency_key, task_command)?;
+        }
     }
 
     Ok(())
@@ -639,7 +662,12 @@ fn handle_build(client: &Client, server: &str, command: &BuildCommand) -> Result
     }
 }
 
-fn handle_epic(client: &Client, server: &str, command: EpicCommand) -> Result<()> {
+fn handle_epic(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: EpicCommand,
+) -> Result<()> {
     match command.command {
         EpicSubcommand::Add(epic) => {
             let request = CreateEpicRequest {
@@ -648,7 +676,8 @@ fn handle_epic(client: &Client, server: &str, command: EpicCommand) -> Result<()
                 title: epic.title,
                 body: epic.body,
             };
-            let response: serde_json::Value = post_json(client, server, "/v1/epics", &request)?;
+            let response: serde_json::Value =
+                post_json(client, server, "/v1/epics", &request, idempotency_key)?;
             print_value(&response)
         }
         EpicSubcommand::List(epics) => {
@@ -718,7 +747,12 @@ fn handle_scope(client: &Client, server: &str) -> Result<()> {
     print_value(&scope)
 }
 
-fn handle_link(client: &Client, server: &str, command: LinkCommand) -> Result<()> {
+fn handle_link(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: LinkCommand,
+) -> Result<()> {
     match command.command {
         LinkSubcommand::Add(link) => {
             let request = AddLinkRequest {
@@ -728,7 +762,8 @@ fn handle_link(client: &Client, server: &str, command: LinkCommand) -> Result<()
                 to: link.to,
                 relation: link.relation,
             };
-            let response: serde_json::Value = post_json(client, server, "/v1/links", &request)?;
+            let response: serde_json::Value =
+                post_json(client, server, "/v1/links", &request, idempotency_key)?;
             print_value(&response)
         }
         LinkSubcommand::Xanadu(link) => {
@@ -739,13 +774,18 @@ fn handle_link(client: &Client, server: &str, command: LinkCommand) -> Result<()
                 to: link.to,
             };
             let response: serde_json::Value =
-                post_json(client, server, "/v1/links/xanadu", &request)?;
+                post_json(client, server, "/v1/links/xanadu", &request, idempotency_key)?;
             print_value(&response)
         }
     }
 }
 
-fn handle_note(client: &Client, server: &str, command: NoteCommand) -> Result<()> {
+fn handle_note(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: NoteCommand,
+) -> Result<()> {
     match command.command {
         NoteSubcommand::Add(add) => {
             let request = CreateNoteRequest {
@@ -754,7 +794,8 @@ fn handle_note(client: &Client, server: &str, command: NoteCommand) -> Result<()
                 title: add.title,
                 body: add.body,
             };
-            let response: serde_json::Value = post_json(client, server, "/v1/notes", &request)?;
+            let response: serde_json::Value =
+                post_json(client, server, "/v1/notes", &request, idempotency_key)?;
             print_value(&response)
         }
         NoteSubcommand::Show(show) => {
@@ -771,7 +812,7 @@ fn handle_note(client: &Client, server: &str, command: NoteCommand) -> Result<()
                 body: update.body,
             };
             let response: serde_json::Value =
-                post_json(client, server, "/v1/notes/update", &request)?;
+                post_json(client, server, "/v1/notes/update", &request, idempotency_key)?;
             print_value(&response)
         }
     }
@@ -787,7 +828,12 @@ fn handle_projection(client: &Client, server: &str, command: &ProjectionCommand)
     }
 }
 
-fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()> {
+fn handle_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: TaskCommand,
+) -> Result<()> {
     match command.command {
         TaskSubcommand::BlockedBy(task) => handle_task_dependency_view(
             client,
@@ -798,52 +844,81 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
         TaskSubcommand::Blocks(task) => {
             handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::Blocks)
         }
-        TaskSubcommand::Claim(task) => handle_claim_task(client, server, task),
-        TaskSubcommand::Complete(task) => handle_complete_task(client, server, task),
+        TaskSubcommand::Claim(task) => handle_claim_task(client, server, idempotency_key, task),
+        TaskSubcommand::Complete(task) => {
+            handle_complete_task(client, server, idempotency_key, task)
+        }
         TaskSubcommand::Context(task) => handle_task_context(client, server, &task),
         TaskSubcommand::Dag(task) => handle_task_dag(client, server, &task),
-        TaskSubcommand::Depend(task) => handle_add_task_dependency(client, server, task),
+        TaskSubcommand::Depend(task) => {
+            handle_add_task_dependency(client, server, idempotency_key, task)
+        }
         TaskSubcommand::List(task) => handle_list_tasks(client, server, &task),
-        TaskSubcommand::Offer(task) => handle_offer_task(client, server, task),
-        TaskSubcommand::Release(task) => handle_release_task(client, server, task),
+        TaskSubcommand::Offer(task) => handle_offer_task(client, server, idempotency_key, task),
+        TaskSubcommand::Release(task) => {
+            handle_release_task(client, server, idempotency_key, task)
+        }
         TaskSubcommand::Show(task) => handle_show_task(client, server, &task),
         TaskSubcommand::Triage(task) => {
-            let response = triage_tasks(client, server, &task)?;
+            let response = triage_tasks(client, server, idempotency_key, &task)?;
             print_value(&response)
         }
-        TaskSubcommand::Update(task) => handle_update_task(client, server, task),
+        TaskSubcommand::Update(task) => handle_update_task(client, server, idempotency_key, task),
     }
 }
 
-fn handle_add_task_dependency(client: &Client, server: &str, task: AddTaskDependency) -> Result<()> {
+fn handle_add_task_dependency(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: AddTaskDependency,
+) -> Result<()> {
     let request = AddTaskDependencyRequest {
         workspace: task.workspace,
         actor: task.actor,
         task_id: task.task_id,
         depends_on_task_id: task.depends_on,
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/dependencies", &request)?;
+    let response: serde_json::Value = post_json(
+        client,
+        server,
+        "/v1/tasks/dependencies",
+        &request,
+        idempotency_key,
+    )?;
     print_value(&response)
 }
 
-fn handle_claim_task(client: &Client, server: &str, task: ClaimTask) -> Result<()> {
+fn handle_claim_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: ClaimTask,
+) -> Result<()> {
     let request = ClaimTaskRequest {
         workspace: task.workspace,
         actor: task.actor,
         task_id: task.task_id,
         lease_seconds: task.lease_seconds,
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/claim", &request)?;
+    let response: serde_json::Value =
+        post_json(client, server, "/v1/tasks/claim", &request, idempotency_key)?;
     print_value(&response)
 }
 
-fn handle_complete_task(client: &Client, server: &str, task: CompleteTask) -> Result<()> {
+fn handle_complete_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: CompleteTask,
+) -> Result<()> {
     let request = CompleteTaskRequest {
         workspace: task.workspace,
         actor: task.actor,
         task_id: task.task_id,
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/complete", &request)?;
+    let response: serde_json::Value =
+        post_json(client, server, "/v1/tasks/complete", &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -860,7 +935,12 @@ fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<
     }
 }
 
-fn handle_offer_task(client: &Client, server: &str, task: OfferTask) -> Result<()> {
+fn handle_offer_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: OfferTask,
+) -> Result<()> {
     let request = OfferTaskRequest {
         workspace: task.workspace,
         author: task.author,
@@ -870,17 +950,24 @@ fn handle_offer_task(client: &Client, server: &str, task: OfferTask) -> Result<(
         epic_id: task.epic_id,
         metadata: task_metadata_from_args(task.metadata),
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/offers", &request)?;
+    let response: serde_json::Value =
+        post_json(client, server, "/v1/tasks/offers", &request, idempotency_key)?;
     print_value(&response)
 }
 
-fn handle_release_task(client: &Client, server: &str, task: ReleaseTask) -> Result<()> {
+fn handle_release_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: ReleaseTask,
+) -> Result<()> {
     let request = ReleaseTaskRequest {
         workspace: task.workspace,
         actor: task.actor,
         task_id: task.task_id,
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/release", &request)?;
+    let response: serde_json::Value =
+        post_json(client, server, "/v1/tasks/release", &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -902,7 +989,12 @@ fn handle_task_dag(client: &Client, server: &str, task: &TaskDagCommand) -> Resu
     print_value(&response)
 }
 
-fn handle_update_task(client: &Client, server: &str, task: UpdateTask) -> Result<()> {
+fn handle_update_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: UpdateTask,
+) -> Result<()> {
     let request = UpdateTaskRequest {
         workspace: task.workspace,
         actor: task.actor,
@@ -912,7 +1004,8 @@ fn handle_update_task(client: &Client, server: &str, task: UpdateTask) -> Result
         epic_id: task.epic_id,
         metadata: task_metadata_from_args(task.metadata),
     };
-    let response: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+    let response: serde_json::Value =
+        post_json(client, server, "/v1/tasks/update", &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -1130,7 +1223,12 @@ fn select_dependency_view_from_dag(
     }
 }
 
-fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<TaskTriageSummary> {
+fn triage_tasks(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: &TriageTasks,
+) -> Result<TaskTriageSummary> {
     if !triage_has_changes(task.complete, task.epic_id, &task.metadata) {
         return Usage {
             message:
@@ -1161,7 +1259,10 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
                     epic_id: Some(epic_id),
                     metadata: next_metadata.clone(),
                 };
-                let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+                let request_key = idempotency_key
+                    .map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
+                let _: serde_json::Value =
+                    post_json(client, server, "/v1/tasks/update", &request, request_key.as_deref())?;
                 updated_task_ids.push(*task_id);
                 changed = true;
             }
@@ -1177,7 +1278,10 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
                 epic_id: task_record.epic_id,
                 metadata: next_metadata,
             };
-            let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+            let request_key = idempotency_key
+                .map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
+            let _: serde_json::Value =
+                post_json(client, server, "/v1/tasks/update", &request, request_key.as_deref())?;
             updated_task_ids.push(*task_id);
             changed = true;
         }
@@ -1188,7 +1292,10 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
                 actor: task.actor.clone(),
                 task_id: *task_id,
             };
-            let _: serde_json::Value = post_json(client, server, "/v1/tasks/complete", &request)?;
+            let request_key = idempotency_key
+                .map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
+            let _: serde_json::Value =
+                post_json(client, server, "/v1/tasks/complete", &request, request_key.as_deref())?;
             completed_task_ids.push(*task_id);
             changed = true;
         }

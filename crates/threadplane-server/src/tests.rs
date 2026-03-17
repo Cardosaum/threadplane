@@ -11,13 +11,16 @@ use crate::{
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
-    migration::{INITIAL_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL},
+    migration::{
+        COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL,
+    },
+    projections::deduplicate_graph_relations,
     storage::{
         build_projection_status, event_kind_name, parse_event_kind, task_priority_rank,
         ProjectionCursor,
     },
 };
-use threadplane_core::{EventKind, TaskPriority};
+use threadplane_core::{EventKind, GraphRelation, TaskPriority};
 
 #[test]
 fn current_build_info_reports_compiled_server_identity() {
@@ -114,6 +117,22 @@ fn projection_offsets_migration_covers_replay_cursor_storage(#[case] expected_fr
 }
 
 #[rstest]
+#[case("CREATE TABLE IF NOT EXISTS command_receipts")]
+#[case("idempotency_key TEXT NOT NULL")]
+#[case("request_payload JSONB NOT NULL")]
+#[case("response_payload JSONB")]
+#[case("UNIQUE (workspace, actor, command_kind, idempotency_key)")]
+fn command_receipts_migration_covers_idempotent_command_storage(
+    #[case] expected_fragment: &str,
+) {
+    let has_fragment = COMMAND_RECEIPTS_MIGRATION_SQL.contains(expected_fragment);
+    assert!(
+        has_fragment,
+        "missing migration fragment: {expected_fragment}"
+    );
+}
+
+#[rstest]
 #[case(TaskPriority::Low, 0)]
 #[case(TaskPriority::Medium, 1)]
 #[case(TaskPriority::High, 2)]
@@ -144,6 +163,35 @@ fn projection_status_reports_full_backlog_without_cursor() {
     assert_eq!(status.pending_events, 7);
     assert_eq!(status.last_event_created_at, None);
     assert_eq!(status.last_event_id, None);
+}
+
+#[test]
+fn deduplicate_graph_relations_collapses_replay_duplicates() {
+    let relation = GraphRelation {
+        body: Some("Shared text".to_owned()),
+        direction: "incoming".to_owned(),
+        entity_kind: "note".to_owned(),
+        entity_ref: "note:00000000-0000-0000-0000-000000000000".to_owned(),
+        relation: "XANADU_LINK".to_owned(),
+        title: Some("Lease note".to_owned()),
+        transclusion_id: Some(Uuid::nil()),
+    };
+
+    let deduplicated = deduplicate_graph_relations(vec![
+        relation.clone(),
+        relation,
+        GraphRelation {
+            body: Some("Dependency".to_owned()),
+            direction: "outgoing".to_owned(),
+            entity_kind: "task".to_owned(),
+            entity_ref: "task:11111111-1111-1111-1111-111111111111".to_owned(),
+            relation: "DEPENDS_ON".to_owned(),
+            title: Some("Ship durable task lifecycle".to_owned()),
+            transclusion_id: None,
+        },
+    ]);
+
+    assert_eq!(deduplicated.len(), 2);
 }
 
 proptest::proptest! {

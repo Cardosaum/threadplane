@@ -14,6 +14,9 @@ pub(crate) const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_
 #[cfg(test)]
 pub(crate) const PROJECTION_OFFSETS_MIGRATION_SQL: &str =
     include_str!("../migrations/0002_projection_offsets.sql");
+#[cfg(test)]
+pub(crate) const COMMAND_RECEIPTS_MIGRATION_SQL: &str =
+    include_str!("../migrations/0003_command_receipts.sql");
 const MIGRATIONS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
 
 pub(crate) async fn run_migrations(pool: &PgPool) -> ServerResult<()> {

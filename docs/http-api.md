@@ -23,6 +23,21 @@ http://127.0.0.1:4000
 `GET /v1/projections/graph`
 - Returns the persisted replay watermark and backlog counters for the Neo4j graph projection.
 
+## Idempotency
+
+Every mutating `POST` endpoint accepts an optional `Idempotency-Key` header.
+
+- The key is scoped by `workspace`, `actor`, `command_kind`, and the request payload.
+- Repeating the same command with the same payload replays the original successful response.
+- Reusing a key with a different payload is rejected.
+- Successful responses include a `receipt` object showing the stored command receipt and whether the response was replayed.
+
+Example:
+
+```text
+Idempotency-Key: seed-note-001
+```
+
 ## Notes
 
 `POST /v1/notes`
@@ -206,9 +221,17 @@ Successful mutating and query endpoints return an envelope like:
 ```json
 {
   "ok": true,
-  "data": {}
+  "data": {},
+  "receipt": {
+    "command_id": "00000000-0000-0000-0000-000000000000",
+    "idempotency_key": "seed-note-001",
+    "recorded_at": "2026-03-17T05:58:00Z",
+    "replayed": false
+  }
 }
 ```
+
+`receipt` is omitted on read-only endpoints and on mutating requests that did not send `Idempotency-Key`.
 
 Errors return:
 
@@ -218,6 +241,8 @@ Errors return:
   "error": "human-readable message"
 }
 ```
+
+If a client reuses an idempotency key with a different payload, the server returns `ok: false` with a conflict-style message instead of accepting an ambiguous retry.
 
 ## Try It Quickly
 
