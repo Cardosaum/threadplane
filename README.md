@@ -2,141 +2,161 @@
 
 [![threadplane demo](./docs/threadplane-demo.gif)](./docs/threadplane-demo.cast)
 
-`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, epics, task DAGs, and claims for each other to pick up later. The animation above is clickable and opens the source [asciinema cast](./docs/threadplane-demo.cast); regenerate both assets with `./scripts/regenerate-demo.sh`.
+`threadplane` is a shared memory and coordination plane for people and AI agents. One server accepts writes, PostgreSQL keeps the durable source of truth, Neo4j exposes traversable graph context, and the CLI gives humans and agents one place to leave notes, tasks, dependencies, claims, and shared text for each other.
 
-This repository is a working POC. It already demonstrates first-class epics, DAG-style task dependencies, lease-backed task lifecycle, graph links, and Xanadu-style transclusion where linked note/task text stays synchronized.
+> [!TIP]
+> Click the animation above to open the source asciinema cast. Regenerate the demo locally with `./scripts/regenerate-demo.sh`.
 
-Read next:
+> [!IMPORTANT]
+> This repository is a working POC, not a finished platform. The current implementation is already useful for dogfooding and local/shared development, but the cryptographic request-signing flow is still the next major layer.
 
-- [Onboarding guide](./docs/onboarding.md)
-- [Configuration guide](./docs/configuration.md)
-- [Benchmarking guide](./docs/benchmarking.md)
-- [Dependency policy](./docs/dependencies.md)
-- [HTTP API reference](./docs/http-api.md)
+## Table Of Contents
 
-## Why It Matters
+- [Why Use It](#why-use-it)
+- [What You Can Do Today](#what-you-can-do-today)
+- [Quick Start](#quick-start)
+- [Two-Minute Walkthrough](#two-minute-walkthrough)
+- [Core Concepts](#core-concepts)
+- [Workspace Governance](#workspace-governance)
+- [CLI Overview](#cli-overview)
+- [Configuration](#configuration)
+- [Architecture At A Glance](#architecture-at-a-glance)
+- [Repository Layout](#repository-layout)
+- [Read Next](#read-next)
 
-Most agent tooling gets one part right and leaves the rest as an exercise:
+## Why Use It
 
-- memory is local, but collaboration is weak
-- collaboration exists, but knowledge is not graph-native
-- knowledge is graph-native, but task handoff and dependency tracking are awkward
-- there is an event log, but no CLI-first workflow for humans and agents sharing the same context
+Most agent tooling gets one or two pieces right:
 
-`threadplane` is meant to close that gap with a single control plane:
+- memory, but not collaboration
+- collaboration, but not durable graph-backed context
+- graph context, but not first-class task handoff and dependency tracking
+- event logs, but not a CLI-first workflow humans and agents can share
 
-- shared context across people, CLIs, and agents
-- durable append-only history
-- graph-backed traversal of dependencies and provenance
-- first-class epics and task DAGs for backlog structure
-- lease-backed claiming so work can be discovered and handed off safely
-- Xanadu-style links for shared text between notes and tasks
+`threadplane` is meant to close that gap with one control plane:
+
+- shared workspaces for people and AI agents
+- durable append-only history in PostgreSQL
+- graph-backed traversal in Neo4j
+- first-class epics and task DAGs
+- lease-backed claims for safe handoff
+- Xanadu-style transclusion links between notes and tasks
+- CLI and HTTP surfaces over the same model
 
 ## What You Can Do Today
 
-- Create epics as durable, first-class planning entities.
-- Offer a task into a shared workspace.
-- Declare task dependencies and inspect the task DAG.
-- Ask for ready-only tasks whose dependencies are already completed.
-- Add notes that other agents can find later.
-- Create semantic links between entities.
-- Create Xanadu links so note/task text is kept in sync.
-- Claim open tasks with expiring leases.
-- Release or complete tasks as work moves through the DAG.
-- Inspect recent workspace events.
-- Ask for task context enriched with graph-linked relations.
-- Explore graph-linked relations from notes, tasks, and epics with entity-centric reads.
+- create epics, tasks, notes, and graph links
+- model task dependencies as a DAG
+- list only ready work whose prerequisites are done
+- claim, release, and complete tasks with expiring leases
+- attach durable metadata like owner, labels, and priority
+- create Xanadu links so note and task text stay synchronized
+- inspect graph-backed context from tasks, notes, and epics
+- tail workspace events incrementally
+- configure workspace policy for priorities, memberships, and public keys
 
 ## Quick Start
 
-1. Generate local config and credentials:
+### 1. Generate local config and credentials
 
 ```bash
-./scripts/generate-env.sh
+$ ./scripts/generate-env.sh
+generated /home/you/path/to/threadplane/.env
+generated /home/you/.config/threadplane/config.toml
 ```
 
-That creates:
+This creates:
 
-- `.env` for Docker Compose and local database credentials
+- `.env` for Docker Compose
 - `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml` for `threadplane-server` and `tplane`
 
-2. Start PostgreSQL and Neo4j:
+### 2. Start PostgreSQL and Neo4j
 
 ```bash
-docker compose up -d
+$ docker compose up -d
+[+] Running 2/2
+ ✔ Container threadplane-postgres-1  Started
+ ✔ Container threadplane-neo4j-1     Started
 ```
 
-3. Start the API server:
+### 3. Start the API server
 
 ```bash
-cargo run -p threadplane-server
+$ cargo run -p threadplane-server
+threadplane_server: bootstrapping server runtime
+threadplane_server: server listening
 ```
 
-On startup, the server applies versioned `sqlx` migrations from [`crates/threadplane-server/migrations`](./crates/threadplane-server/migrations), catches the graph projection up from PostgreSQL, and keeps a replay worker running with persisted projection offsets. A fresh database bootstraps cleanly, and a stale or empty Neo4j graph can be rebuilt without inventing a second source of truth.
+On startup the server:
 
-4. Make the CLI available as `tplane`:
+- applies versioned SQL migrations
+- bootstraps workspace policy on first use
+- catches the Neo4j projection up from PostgreSQL
+- keeps a replay worker running with durable projection offsets
+
+### 4. Install the CLI
 
 ```bash
-cargo install --path crates/threadplane-cli --locked
+$ cargo install --path crates/threadplane-cli --locked
+  Installing tplane v0.1.0 (...)
+   Installed package `tplane`
 ```
 
-If you prefer not to install it, use `./target/debug/tplane` after `cargo build -p threadplane-cli`.
+If you do not want to install it yet, use `./target/debug/tplane` after `cargo build -p threadplane-cli`.
 
-5. In another terminal, inspect the service:
+### 5. Sanity-check the service
 
 ```bash
-tplane scope
-tplane projection status
-tplane config show
-tplane build compare
+$ tplane scope
+{
+  "build": {
+    "service": "threadplane-server",
+    "version": "0.1.0"
+  },
+  "projection": {
+    "projection_name": "neo4j_graph",
+    "caught_up": true
+  }
+}
+
+$ tplane projection status
+{
+  "ok": true,
+  "data": {
+    "projection_name": "neo4j_graph",
+    "caught_up": true,
+    "pending_events": 0
+  }
+}
+
+$ tplane build compare
+{
+  "matches": true,
+  "differences": []
+}
 ```
 
-`scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
-It also includes the persisted graph replay watermark and pending projection count, and `projection status` exposes the same data directly when you want an operational read instead of the broader product summary.
-If the local CLI build and running server build drift apart, `scope` prints a warning on stderr and `build compare` shows the full typed diff.
-Mutating commands also accept a global `--idempotency-key <key>`, which maps to durable command receipts in PostgreSQL so retries can safely replay the original result instead of duplicating writes.
-
-5. Run the full smoke test if you want the fastest proof that everything works:
+### 6. Run the full smoke test
 
 ```bash
-./scripts/e2e.sh
+$ ./scripts/e2e.sh
+threadplane e2e ok
+workspace=e2e-...
 ```
 
-For daily dogfooding, use the one-command local refresh flow:
-
-```bash
-./scripts/dogfood.sh up
-```
-
-For repeatable throughput and latency checks, use the benchmark harness:
-
-```bash
-./scripts/benchmark.sh mixed
-```
-
-The benchmark scripts run `threadplane-bench` in release mode. For useful comparisons, run the server in release mode too.
-
-To capture durable local baselines for later comparison:
-
-```bash
-./scripts/capture-benchmark-baseline.sh
-```
+> [!NOTE]
+> For day-to-day local dogfooding, `./scripts/dogfood.sh up` is the fastest path. For repeatable perf checks, use `./scripts/benchmark.sh mixed`.
 
 ## Two-Minute Walkthrough
 
 Create an epic:
 
 ```bash
-tplane epic add \
-  --workspace shared-lab \
-  --author operator \
-  --title "Workflow foundations" \
-  --body "Shared backlog for the workspace."
-```
-
-Expected output:
-
-```json
+$ tplane epic add \
+    --workspace shared-lab \
+    --author operator \
+    --title "Workflow foundations" \
+    --body "Shared backlog for the workspace."
 {
   "ok": true,
   "data": {
@@ -148,50 +168,39 @@ Expected output:
 }
 ```
 
-Create a dependency task:
+Offer a prerequisite task:
 
 ```bash
-tplane task offer \
-  --workspace shared-lab \
-  --author operator \
-  --epic-id <epic-id> \
-  --title "Ship durable task lifecycle" \
-  --details "Completion should unlock dependent work."
-```
-
-Expected output:
-
-```json
+$ tplane task offer \
+    --workspace shared-lab \
+    --author operator \
+    --epic-id <epic-id> \
+    --title "Ship durable task lifecycle" \
+    --details "Completion should unlock dependent work."
 {
   "ok": true,
   "data": {
     "task_id": "<dependency-task-id>",
     "status": "open",
-    "priority": "medium",
-    "title": "Ship durable task lifecycle"
+    "priority": "medium"
   }
 }
 ```
 
-Create a dependent task:
+Offer a dependent task:
 
 ```bash
-tplane task offer \
-  --workspace shared-lab \
-  --author operator \
-  --epic-id <epic-id> \
-  --depends-on <dependency-task-id> \
-  --priority high \
-  --owner codex \
-  --label agent \
-  --label workflow \
-  --title "Investigate tuple leases" \
-  --details "Need a shared lease-backed claim flow with dependency tracking."
-```
-
-Expected output:
-
-```json
+$ tplane task offer \
+    --workspace shared-lab \
+    --author operator \
+    --epic-id <epic-id> \
+    --depends-on <dependency-task-id> \
+    --priority high \
+    --owner codex \
+    --label agent \
+    --label workflow \
+    --title "Investigate tuple leases" \
+    --details "Need a shared lease-backed claim flow with dependency tracking."
 {
   "ok": true,
   "data": {
@@ -204,44 +213,32 @@ Expected output:
 }
 ```
 
-Inspect the DAG view:
+Inspect the dependency shape:
 
 ```bash
-tplane task show --task-id <task-id>
-tplane task dag --task-id <task-id>
-tplane task blocked-by --task-id <task-id>
-tplane task blocks --task-id <dependency-task-id> --direct-only
+$ tplane task dag --task-id <task-id>
+{
+  "ok": true,
+  "data": {
+    "ready": false,
+    "dependencies": [
+      {
+        "task_id": "<dependency-task-id>",
+        "title": "Ship durable task lifecycle",
+        "depth": 1
+      }
+    ]
+  }
+}
 ```
 
-Expected output:
-
-```text
-task:<task-id> open high owner=codex labels=[agent,workflow]
-blocked by:
-- task:<dependency-task-id> Ship durable task lifecycle [open]
-blocks:
-- task:<task-id> Investigate tuple leases [open]
-```
-
-Complete the prerequisite and ask for ready work:
+Complete the prerequisite, then ask for ready work:
 
 ```bash
-tplane task complete \
-  --workspace shared-lab \
-  --actor operator \
-  --task-id <dependency-task-id>
-
-tplane task list \
-  --workspace shared-lab \
-  --status open \
-  --ready-only \
-  --limit 5 \
-  --format compact
-```
-
-Expected output:
-
-```text
+$ tplane task complete \
+    --workspace shared-lab \
+    --actor operator \
+    --task-id <dependency-task-id>
 {
   "ok": true,
   "data": {
@@ -250,30 +247,22 @@ Expected output:
   }
 }
 
-task:<task-id> high open ready epic=Workflow foundations owner=codex
+$ tplane task list \
+    --workspace shared-lab \
+    --status open \
+    --ready-only \
+    --limit 5 \
+    --format compact
+11ef6dff | Investigate tuple leases | status=open | priority=high | ready | deps=1 | owner=codex | labels=agent,workflow
 ```
 
-Ready queues come back ordered by priority first and then recency, so the first compact rows are the best next picks for people and agents.
-
-Pick or claim the best next task directly:
+Claim the best next task directly:
 
 ```bash
-tplane task next \
-  --workspace shared-lab \
-  --format compact
-
-tplane task claim-next \
-  --workspace shared-lab \
-  --actor agent-b \
-  --priority urgent \
-  --lease-seconds 120
-```
-
-Expected output:
-
-```text
-task:<task-id> high open ready epic=Workflow foundations owner=codex
-
+$ tplane task claim-next \
+    --workspace shared-lab \
+    --actor agent-b \
+    --lease-seconds 120
 {
   "ok": true,
   "data": {
@@ -285,112 +274,27 @@ task:<task-id> high open ready epic=Workflow foundations owner=codex
 }
 ```
 
-Bulk-triage multiple backlog items at once:
+Create a note and link it with Xanadu semantics:
 
 ```bash
-tplane task triage \
-  --workspace shared-lab \
-  --actor operator \
-  --epic-id <epic-id> \
-  --priority low \
-  --owner backlog \
-  --label triaged \
-  --complete \
-  --task-id <task-a-id> \
-  --task-id <task-b-id>
-```
-
-Expected output:
-
-```json
-{
-  "completed_task_ids": ["<task-a-id>", "<task-b-id>"],
-  "updated_task_ids": ["<task-a-id>", "<task-b-id>"],
-  "unchanged_task_ids": []
-}
-```
-
-Create a note:
-
-```bash
-tplane note add \
-  --workspace shared-lab \
-  --author agent-a \
-  --title "Lease design note" \
-  --body "Claims should expire and return tasks to the pool."
-```
-
-Expected output:
-
-```json
+$ tplane note add \
+    --workspace shared-lab \
+    --author agent-a \
+    --title "Lease design note" \
+    --body "Claims should expire and return tasks to the pool."
 {
   "ok": true,
   "data": {
     "note_id": "<note-id>",
-    "entity_ref": "note:<note-id>",
-    "title": "Lease design note"
+    "entity_ref": "note:<note-id>"
   }
 }
-```
 
-Explore related entities without going through a task-only context path:
-
-```bash
-tplane entity show \
-  --entity-ref note:<note-id> \
-  --format compact
-
-tplane entity related \
-  --entity-ref epic:<epic-id> \
-  --format compact
-```
-
-Expected output:
-
-```text
-note:<note-id> Lease design note
-relations:
-- DOCUMENTS -> task:<task-id>
-
-epic:<epic-id> Workflow foundations
-relations:
-- IMPLEMENTS_EPIC <- task:<dependency-task-id>
-- IMPLEMENTS_EPIC <- task:<task-id>
-```
-
-List or search notes without remembering UUIDs:
-
-```bash
-tplane note list \
-  --workspace shared-lab \
-  --format compact
-
-tplane note search \
-  --workspace shared-lab \
-  --query "lease" \
-  --format compact
-```
-
-Expected output:
-
-```text
-note:<note-id> Lease design note
-note:<note-id> Lease design note
-```
-
-Create a Xanadu link between them:
-
-```bash
-tplane link xanadu \
-  --workspace shared-lab \
-  --actor agent-a \
-  --from task:<task-id> \
-  --to note:<note-id>
-```
-
-Expected output:
-
-```json
+$ tplane link xanadu \
+    --workspace shared-lab \
+    --actor agent-a \
+    --from task:<task-id> \
+    --to note:<note-id>
 {
   "ok": true,
   "data": {
@@ -400,20 +304,15 @@ Expected output:
 }
 ```
 
-Update one side and let the shared transclusion propagate:
+Update one side and inspect the shared context:
 
 ```bash
-tplane note update \
-  --workspace shared-lab \
-  --actor agent-a \
-  --note-id <note-id> \
-  --title "Lease semantics updated" \
-  --body "A xanadu link should keep linked task text synchronized."
-```
-
-Expected output:
-
-```json
+$ tplane note update \
+    --workspace shared-lab \
+    --actor agent-a \
+    --note-id <note-id> \
+    --title "Lease semantics updated" \
+    --body "A xanadu link should keep linked task text synchronized."
 {
   "ok": true,
   "data": {
@@ -422,30 +321,15 @@ Expected output:
     "transclusion_id": "<transclusion-id>"
   }
 }
-```
 
-Inspect the task with graph-backed context:
-
-```bash
-tplane task context --task-id <task-id>
-```
-
-Expected output:
-
-```json
+$ tplane task context --task-id <task-id>
 {
   "ok": true,
   "data": {
     "task": {
       "task_id": "<task-id>",
-      "title": "Lease semantics updated",
       "transclusion_id": "<transclusion-id>"
     },
-    "epic": {
-      "title": "Workflow foundations"
-    },
-    "dependencies": [],
-    "dependents": [],
     "relations": [
       {
         "relation": "XANADU_LINK"
@@ -455,173 +339,190 @@ Expected output:
 }
 ```
 
-Consume event history incrementally:
+Tail the workspace event history:
 
 ```bash
-tplane events tail \
-  --workspace shared-lab \
-  --limit 25 \
-  --format compact
+$ tplane events tail --workspace shared-lab --limit 25 --format compact
+16766a75 | epic_recorded | actor=operator | at=...
+3f85537c | task_offered | actor=operator | at=...
+5e9e9fed | task_offered | actor=operator | at=...
+16f3f40e | note_recorded | actor=agent-a | at=...
+f2548a6a | xanadu_linked | actor=agent-a | at=...
 ```
 
-Expected output:
+## Core Concepts
 
-```text
-epic_recorded epic:<epic-id>
-task_offered task:<dependency-task-id>
-task_offered task:<task-id>
-note_recorded note:<note-id>
-xanadu_linked task:<task-id> -> note:<note-id>
-note_updated note:<note-id>
-task_claimed task:<task-id>
+### Workspace
+
+A shared namespace where agents and people collaborate. Tasks, notes, epics, links, memberships, and policy are all scoped to a workspace.
+
+### Epic
+
+A first-class planning object. Tasks can attach to one epic.
+
+### Task DAG
+
+Tasks can depend on other tasks. Ready queues only surface tasks whose dependencies are already completed.
+
+### Lease-Backed Claim
+
+Agents can claim tasks temporarily. If they disappear, the lease expires and the work returns to the queue.
+
+### Xanadu Link
+
+A special link between text entities that keeps their shared text synchronized through a transclusion group.
+
+### Graph Projection
+
+PostgreSQL is the source of truth. Neo4j is a rebuildable projection used for traversal, relationships, and richer context reads.
+
+## Workspace Governance
+
+Each workspace has a durable governance policy:
+
+- supported task priorities and their ranking
+- one default priority used when task creation omits `--priority`
+- role membership for `viewer`, `editor`, and `admin`
+- allowed public-key algorithms
+- registered actor public keys
+
+The server bootstraps new workspaces from `server.workspace_bootstrap` in config the first time they are touched.
+
+Show the effective workspace policy:
+
+```bash
+$ tplane workspace policy show --workspace shared-lab
+{
+  "ok": true,
+  "data": {
+    "workspace": "shared-lab",
+    "priorities": {
+      "default_priority": "medium"
+    }
+  }
+}
 ```
 
-## CLI Surface
+Replace the policy:
 
-Current commands:
+```bash
+$ tplane workspace policy set \
+    --workspace shared-lab \
+    --actor operator \
+    --default-priority normal \
+    --allowed-algorithm ssh_ed25519 \
+    --challenge-ttl-seconds 90 \
+    --priority background:10:"Useful but not urgent." \
+    --priority normal:20:"Default day-to-day work." \
+    --priority expedite:30:"Pull this forward." \
+    --signed-commands-required
+{
+  "ok": true,
+  "data": {
+    "workspace": "shared-lab"
+  }
+}
+```
 
-- `scope`
-- `projection status`
-- `build show`
-- `build compare`
-- `epic add`
-- `epic list`
-- `epic show`
-- `entity related`
-- `entity show`
-- `note add`
-- `note list`
-- `note search`
-- `note show`
-- `note update`
-- `task blocked-by`
-- `task blocks`
-- `task complete`
-- `task claim`
-- `task claim-next`
-- `task context`
-- `task dag`
-- `task depend`
-- `task list`
-  - supports `--limit`, `--format compact`, `--priority`, `--owner`, and `--label`
-- `task next`
-- `task offer`
-- `task update`
-- `task release`
-- `task show`
-- `task triage`
-  - supports bulk epic assignment plus durable metadata updates
-- `workspace policy show`
-- `workspace policy set`
-- `workspace member list`
-- `workspace member grant`
-- `workspace key list`
-- `workspace key add`
-- `link add`
-- `link xanadu`
-- `events list`
-- `events tail`
-- `config show`
+Grant a workspace member:
 
-Roadmap:
+```bash
+$ tplane workspace member grant \
+    --workspace shared-lab \
+    --actor operator \
+    --member-actor-id agent-c \
+    --role editor
+{
+  "ok": true,
+  "data": {
+    "actor_id": "agent-c",
+    "role": "editor",
+    "workspace": "shared-lab"
+  }
+}
+```
 
-- [CLI Usability Roadmap](./docs/roadmap-cli-usability.md)
+> [!IMPORTANT]
+> Role-based enforcement is live now, but actor identity is not yet cryptographically verified. Public keys are durable already; challenge issuance and signature verification are the next layer.
+
+## CLI Overview
+
+High-value commands:
+
+- `tplane scope`
+- `tplane projection status`
+- `tplane build compare`
+- `tplane epic add|list|show`
+- `tplane task offer|list|next|claim|claim-next|release|complete|show|context|dag|depend|blocked-by|blocks|triage|update`
+- `tplane note add|list|search|show|update`
+- `tplane entity show|related`
+- `tplane workspace policy show|set`
+- `tplane workspace member list|grant`
+- `tplane workspace key list|add`
+- `tplane link add|xanadu`
+- `tplane events list|tail`
+- `tplane config show`
 
 Global options:
 
-- `--config <path>` to load a specific config file
-- `--server <url>` to override the configured API base URL
-- `--idempotency-key <key>` to make a mutating command safely retryable
+- `--config <path>`
+- `--server <url>`
+- `--idempotency-key <key>`
 
 ## Configuration
 
-`threadplane` does not ship implicit runtime defaults. Every runtime value must come from config, environment, or explicit overrides, layered in this order:
+`threadplane` does not ship implicit runtime defaults. Every runtime value must come from config, environment, or explicit overrides.
 
-1. `--config /path/to/config.toml` for explicit one-off CLI runs
+Discovery order:
+
+1. `--config /path/to/config.toml`
 2. `THREADPLANE_CONFIG=/path/to/config.toml`
-3. XDG user config at `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
+3. `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
 4. XDG system config directories such as `/etc/xdg/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
 6. CLI runtime overrides such as `--server`
 
-Every server config also includes a `server.workspace_bootstrap` block. That bootstrap policy seeds new workspaces the first time they are touched:
-
-- supported task priorities and their queue rank
-- the default priority used by the CLI when `task offer` omits `--priority`
-- allowed public-key algorithms and signature policy
-- initial admin/editor memberships
-- initial actor public keys
-
-See [etc/config.toml.example](./etc/config.toml.example) for the file format.
-
-Inspect the resolved config and discovery order:
+Inspect the final resolved config:
 
 ```bash
-tplane config show
+$ tplane config show
+{
+  "config": {
+    "cli": {
+      "url": "http://127.0.0.1:4000"
+    }
+  },
+  "discovery": {
+    "selected_path": "/home/you/.config/threadplane/config.toml"
+  }
+}
 ```
 
-Use an explicit config file for a one-off run:
-
-```bash
-tplane --config /path/to/config.toml scope
-```
-
-Example:
-
-```toml
-[cli]
-url = "http://127.0.0.1:4000"
-
-[server]
-bind = "127.0.0.1:4000"
-database_url = "postgres://threadplane:password@127.0.0.1:5432/threadplane"
-default_lease_seconds = 300
-neo4j_password = "password"
-neo4j_uri = "127.0.0.1:7687"
-neo4j_user = "neo4j"
-```
+For the full config shape, see [etc/config.toml.example](./etc/config.toml.example) and [docs/configuration.md](./docs/configuration.md).
 
 ## Architecture At A Glance
 
-- `threadplane-server` is the write boundary.
-- PostgreSQL is the system of record.
-- Neo4j is a rebuildable graph projection.
-- PostgreSQL also stores projection replay offsets, so catch-up survives restarts.
-- Tuple-space semantics live in the service layer.
-- Tasks can belong to first-class epics and depend on other tasks without creating cycles.
-- Claims use leases so work returns to the pool if an agent disappears.
-- Xanadu links join textual entities into a shared transclusion group.
-
-## Why PostgreSQL First
-
-VarveDB is an important influence for the event-sourcing model, but this POC optimizes first for a shared internet-reachable source of truth. That makes PostgreSQL the practical first event log. If `threadplane` later grows local replicas or offline-first ingest, VarveDB is still an interesting building block for edge or sidecar use.
+- `threadplane-server` is the write boundary
+- PostgreSQL is the source of truth
+- Neo4j is a rebuildable projection
+- projection offsets are stored durably in PostgreSQL
+- task coordination semantics live in the service layer
+- workspace governance is durable shared state, not just local config
 
 ## Repository Layout
 
-- `crates/threadplane-core`: shared types, config loading, and core helpers
-- `crates/threadplane-server`: HTTP server and projections
-- `crates/threadplane-cli`: human and agent CLI
+- `crates/threadplane-core`: shared types, config, and domain helpers
+- `crates/threadplane-server`: HTTP server, storage, and projections
+- `crates/threadplane-cli`: CLI for people and agents
 - `crates/threadplane-bench`: repeatable benchmark harness
 - `compose.yaml`: local PostgreSQL and Neo4j stack
-- `docs/poc-scope.md`: POC boundaries and success criteria
-- `docs/onboarding.md`: first-run walkthrough for humans and agents
-- `docs/configuration.md`: config precedence, examples, and troubleshooting
-- `docs/http-api.md`: endpoint-level API reference
-- `docs/architecture.md`: deeper architecture notes
-- `docs/adr/0001-authoritative-log-and-graph-projection.md`: first ADR
+- `docs/`: onboarding, API, architecture, benchmarks, and roadmap docs
 
-## Current Status
+## Read Next
 
-This is a POC, not a finished platform. The current implementation proves the shape:
-
-- end-to-end CLI flow works
-- first-class epics and task DAGs work
-- event log is durable in PostgreSQL
-- mutating commands support idempotency keys and durable command receipts
-- graph projection is live in Neo4j
-- projection replay and recovery survive restarts
-- task claims are lease-backed
-- task release/complete lifecycle is live
-- Xanadu linking propagates content between note/task pairs
-
-The next layers are production concerns such as auth, richer multi-workspace policy, benchmark and stress tooling, and MCP-facing ergonomics.
+- [Onboarding guide](./docs/onboarding.md)
+- [Configuration guide](./docs/configuration.md)
+- [HTTP API reference](./docs/http-api.md)
+- [Benchmarking guide](./docs/benchmarking.md)
+- [CLI usability roadmap](./docs/roadmap-cli-usability.md)
+- [Governance and auth roadmap](./docs/roadmap-governance-and-auth.md)
