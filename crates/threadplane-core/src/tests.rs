@@ -4,9 +4,9 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::{
-    default_config_path, default_system_config_path, epic_entity_ref, note_entity_ref,
-    parse_entity_ref, relation_type, service_snapshot, task_entity_ref, EntityRef, EventKind,
-    ThreadplaneConfig,
+    build_info, default_config_path, default_system_config_path, epic_entity_ref, note_entity_ref,
+    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref, EntityRef,
+    EventKind, ThreadplaneConfig,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -63,8 +63,67 @@ fn relation_type_normalizes_examples(#[case] input: &str, #[case] expected: &str
 #[case(EventKind::TaskUpdated)]
 #[case(EventKind::XanaduLinked)]
 fn service_snapshot_advertises_all_supported_event_kinds(#[case] kind: EventKind) {
-    let snapshot = service_snapshot();
+    let snapshot = service_snapshot(build_info(
+        "threadplane-server",
+        "0.1.0",
+        "debug",
+        Some("abcdef123456"),
+        false,
+    ));
     assert!(snapshot.event_kinds.contains(&kind));
+}
+
+#[test]
+fn service_snapshot_embeds_build_identity() {
+    let snapshot = service_snapshot(build_info(
+        "threadplane-server",
+        "0.1.0",
+        "release",
+        Some("abcdef123456"),
+        true,
+    ));
+
+    assert_eq!(snapshot.build.service, "threadplane-server");
+    assert_eq!(snapshot.build.version, "0.1.0");
+    assert_eq!(snapshot.build.build_profile, "release");
+    assert_eq!(snapshot.build.git_commit.as_deref(), Some("abcdef123456"));
+    assert!(snapshot.build.git_dirty);
+}
+
+#[test]
+fn scope_summary_embeds_build_identity() {
+    let build_identity = build_info(
+        "threadplane-server",
+        "0.1.0",
+        "debug",
+        Some("abcdef123456"),
+        true,
+    );
+    let scope = scope_summary(&build_identity);
+    let build_object = scope
+        .get("build")
+        .and_then(serde_json::Value::as_object);
+
+    assert_eq!(
+        build_object.and_then(|value| value.get("service")),
+        Some(&serde_json::Value::from("threadplane-server"))
+    );
+    assert_eq!(
+        build_object.and_then(|value| value.get("version")),
+        Some(&serde_json::Value::from("0.1.0"))
+    );
+    assert_eq!(
+        build_object.and_then(|value| value.get("build_profile")),
+        Some(&serde_json::Value::from("debug"))
+    );
+    assert_eq!(
+        build_object.and_then(|value| value.get("git_commit")),
+        Some(&serde_json::Value::from("abcdef123456"))
+    );
+    assert_eq!(
+        build_object.and_then(|value| value.get("git_dirty")),
+        Some(&serde_json::Value::from(true))
+    );
 }
 
 #[test]

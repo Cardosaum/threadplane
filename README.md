@@ -76,10 +76,18 @@ cargo run -p threadplane-cli -- scope
 cargo run -p threadplane-cli -- config show
 ```
 
+`scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
+
 5. Run the full smoke test if you want the fastest proof that everything works:
 
 ```bash
 ./scripts/e2e.sh
+```
+
+For daily dogfooding, use the one-command local refresh flow:
+
+```bash
+./scripts/dogfood.sh up
 ```
 
 ## Two-Minute Walkthrough

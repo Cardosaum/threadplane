@@ -1,6 +1,7 @@
 extern crate alloc;
 
 pub(crate) mod app;
+pub(crate) mod build_info;
 pub(crate) mod error;
 pub(crate) mod handlers;
 pub(crate) mod lifecycle;

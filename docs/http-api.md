@@ -11,13 +11,13 @@ http://127.0.0.1:4000
 ## Basic Endpoints
 
 `GET /`
-- Returns the high-level service snapshot.
+- Returns the high-level service snapshot, including build metadata and dirty-worktree state for the running server binary.
 
 `GET /healthz`
-- Returns a simple health payload.
+- Returns a simple health payload plus build metadata and dirty-worktree state for the running server binary.
 
 `GET /scope`
-- Returns the current POC summary.
+- Returns the current POC summary plus build metadata and dirty-worktree state for the running server binary.
 
 ## Notes
 

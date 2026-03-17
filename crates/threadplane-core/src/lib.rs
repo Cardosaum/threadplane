@@ -8,13 +8,14 @@ pub use self::config::{
     IMPLEMENTS_EPIC_RELATION, SERVICE_NAME, XANADU_RELATION,
 };
 pub use self::types::{
-    epic_entity_ref, note_entity_ref, parse_entity_ref, relation_type, scope_summary,
-    service_snapshot, task_entity_ref, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope,
-    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityRef, EpicRecord, EventEnvelope, EventKind, EventRecord,
-    GraphRelation, LinkRecord, NoteRecord, OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot,
-    TaskClaimRecord, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskRecord,
-    TaskSummary, UpdateNoteRequest, UpdateTaskRequest,
+    build_info, epic_entity_ref, health_summary, note_entity_ref, parse_entity_ref,
+    relation_type, scope_summary, service_snapshot, task_entity_ref, AddLinkRequest,
+    AddTaskDependencyRequest, ApiEnvelope, BuildInfo, ClaimTaskRequest, CompleteTaskRequest,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EntityRef, EpicRecord,
+    EventEnvelope, EventKind, EventRecord, GraphRelation, LinkRecord, NoteRecord,
+    OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    TaskDependencySummary, TaskListEntry, TaskRecord, TaskSummary, UpdateNoteRequest,
+    UpdateTaskRequest,
 };
 
 #[cfg(test)]

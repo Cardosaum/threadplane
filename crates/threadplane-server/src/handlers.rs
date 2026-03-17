@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
+    build_info::current_build_info,
     error::{AppResult, ThreadplaneServerError},
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
     projections::{
@@ -33,12 +34,12 @@ use crate::{
     },
 };
 use threadplane_core::{
-    scope_summary, service_snapshot, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope,
-    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
+    health_summary, scope_summary, service_snapshot, AddLinkRequest, AddTaskDependencyRequest,
+    ApiEnvelope, ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
     CreateXanaduLinkRequest, EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord,
     OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
     TaskListEntry, TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION,
-    SERVICE_NAME, XANADU_RELATION,
+    XANADU_RELATION,
 };
 
 #[derive(Debug, Deserialize)]
@@ -54,18 +55,15 @@ pub(crate) struct TaskListQuery {
 }
 
 pub(crate) async fn root() -> Json<ServiceSnapshot> {
-    Json(service_snapshot())
+    Json(service_snapshot(current_build_info()))
 }
 
 pub(crate) async fn healthz() -> Json<Value> {
-    Json(json!({
-        "ok": true,
-        "service": SERVICE_NAME,
-    }))
+    Json(health_summary(&current_build_info()))
 }
 
 pub(crate) async fn scope() -> Json<Value> {
-    Json(scope_summary())
+    Json(scope_summary(&current_build_info()))
 }
 
 pub(crate) async fn create_epic(

@@ -4,12 +4,25 @@ use rstest::rstest;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    build_info::current_build_info,
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
     storage::{event_kind_name, parse_event_kind, schema_statements},
 };
 use threadplane_core::EventKind;
+
+#[test]
+fn current_build_info_reports_compiled_server_identity() {
+    let build = current_build_info();
+    let expected_dirty = matches!(env!("THREADPLANE_GIT_DIRTY"), "true");
+
+    assert_eq!(build.service, "threadplane-server");
+    assert_eq!(build.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(build.build_profile, env!("THREADPLANE_BUILD_PROFILE"));
+    assert_eq!(build.git_dirty, expected_dirty);
+    assert!(!build.build_profile.is_empty());
+}
 
 #[rstest]
 #[case(None, 300, 300)]

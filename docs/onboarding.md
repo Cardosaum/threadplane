@@ -40,6 +40,15 @@ cargo run -p threadplane-cli -- config show
 cargo run -p threadplane-cli -- scope
 ```
 
+The scope payload includes the running server build metadata, including dirty-worktree state, which is useful when you are dogfooding locally and want to catch stale or misleading background processes quickly.
+
+For repeated local development, you can also use the dogfooding bootstrap flow:
+
+```bash
+./scripts/dogfood.sh up
+./scripts/dogfood.sh status
+```
+
 ## First Shared Workflow
 
 Create an epic:

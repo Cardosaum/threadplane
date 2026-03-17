@@ -44,7 +44,17 @@ pub struct EventEnvelope {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildInfo {
+    pub build_profile: String,
+    pub git_commit: Option<String>,
+    pub git_dirty: bool,
+    pub service: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSnapshot {
+    pub build: BuildInfo,
     pub event_kinds: Vec<EventKind>,
     pub graph_projection: String,
     pub name: String,
@@ -306,8 +316,27 @@ pub enum EntityRef {
 
 #[inline]
 #[must_use]
-pub fn service_snapshot() -> ServiceSnapshot {
+pub fn build_info(
+    service: &str,
+    version: &str,
+    build_profile: &str,
+    git_commit: Option<&str>,
+    git_dirty: bool,
+) -> BuildInfo {
+    BuildInfo {
+        build_profile: build_profile.to_owned(),
+        git_commit: git_commit.map(ToOwned::to_owned),
+        git_dirty,
+        service: service.to_owned(),
+        version: version.to_owned(),
+    }
+}
+
+#[inline]
+#[must_use]
+pub fn service_snapshot(build: BuildInfo) -> ServiceSnapshot {
     ServiceSnapshot {
+        build,
         event_kinds: EventKind::iter().collect(),
         graph_projection: "Neo4j projection for notes, dependencies, provenance, and traversal"
             .to_owned(),
@@ -323,9 +352,20 @@ pub fn service_snapshot() -> ServiceSnapshot {
 
 #[inline]
 #[must_use]
-pub fn scope_summary() -> Value {
+pub fn health_summary(build: &BuildInfo) -> Value {
+    json!({
+        "ok": true,
+        "service": SERVICE_NAME,
+        "build": build,
+    })
+}
+
+#[inline]
+#[must_use]
+pub fn scope_summary(build: &BuildInfo) -> Value {
     json!({
         "name": SERVICE_NAME,
+        "build": build,
         "poc": {
             "goal": "Validate shared agent collaboration over an internet-reachable event log and graph projection",
             "service_boundary": "All writes pass through threadplane-server",
