@@ -2896,6 +2896,7 @@ name = "threadplane-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "derive_more",
  "reqwest",
  "serde",
  "serde_json",
