@@ -1,15 +1,16 @@
 # Configuration
 
 `threadplane` uses TOML for application config and environment variables for overrides and local infrastructure wiring.
+It does not ship built-in runtime defaults, so every value must be stated explicitly in config, env, or CLI overrides.
 
 ## Discovery Order
 
-The CLI and server start from built-in defaults, then layer config in this order:
+The CLI and server layer config in this order:
 
 1. `--config /path/to/config.toml` for explicit one-off CLI runs
 2. `THREADPLANE_CONFIG=/path/to/config.toml`
-3. repo-local `etc/config.toml`
-4. system config at `/etc/threadplane/config.toml`
+3. XDG user config at `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
+4. XDG system config directories such as `/etc/xdg/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
 6. CLI runtime overrides such as `--server`
 
@@ -25,10 +26,10 @@ cargo run -p threadplane-cli -- config show
 
 - `.env`
   Used by Docker Compose for PostgreSQL and Neo4j credentials.
-- `etc/config.toml`
+- `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
   Used by `threadplane-server` and `threadplane-cli`.
 
-Both are gitignored.
+The generated config lives in your XDG config home, not in the repo worktree.
 
 ## Config Shape
 
@@ -47,7 +48,7 @@ neo4j_uri = "127.0.0.1:7687"
 neo4j_user = "neo4j"
 ```
 
-See [../etc/config.toml.example](../etc/config.toml.example) for the committed example.
+See [../etc/config.toml.example](../etc/config.toml.example) for the committed example shape.
 
 ## One-Off Overrides
 

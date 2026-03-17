@@ -16,6 +16,8 @@ This guide gets you from a fresh clone to a working shared workspace in a few mi
 ./scripts/generate-env.sh
 ```
 
+That writes Docker credentials to `.env` in the repo and the application config to `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`.
+
 2. Start PostgreSQL and Neo4j:
 
 ```bash

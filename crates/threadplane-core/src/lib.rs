@@ -2,12 +2,11 @@ mod config;
 mod types;
 
 pub use self::config::{
-    default_config_path, default_system_config_path, discover_threadplane_config,
+    default_config_path, default_system_config_paths, discover_threadplane_config,
     load_threadplane_config, load_threadplane_config_with_overrides,
     load_threadplane_config_with_path, CliConfig, CliConfigOverrides, ConfigDiscovery,
     LoadedThreadplaneConfig, ServerConfig, ServerConfigOverrides, ThreadplaneConfig,
-    ThreadplaneConfigOverrides, ThreadplaneError, DEFAULT_BIND_ADDR, DEFAULT_CONFIG_PATH,
-    DEFAULT_LEASE_SECONDS, DEFAULT_SERVER_URL, DEFAULT_SYSTEM_CONFIG_PATH, DEPENDS_ON_RELATION,
+    ThreadplaneConfigOverrides, ThreadplaneError, CONFIG_FILE_NAME, DEPENDS_ON_RELATION,
     ENV_CONFIG_PATH, ENV_PREFIX, IMPLEMENTS_EPIC_RELATION, SERVICE_NAME, XANADU_RELATION,
 };
 pub use self::types::{

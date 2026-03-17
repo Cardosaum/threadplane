@@ -3,7 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
-CONFIG_DIR="${ROOT_DIR}/etc"
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+CONFIG_DIR="${CONFIG_HOME}/threadplane"
 CONFIG_FILE="${CONFIG_DIR}/config.toml"
 
 if [[ ( -f "$ENV_FILE" || -f "$CONFIG_FILE" ) && "${1:-}" != "--force" ]]; then

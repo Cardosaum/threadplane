@@ -7,7 +7,8 @@ cd "$ROOT_DIR"
 WORKSPACE="e2e-$(date +%s)"
 PROJECT="threadplane-${WORKSPACE}"
 SERVER_LOG="$(mktemp)"
-CONFIG_FILE="$(mktemp)"
+XDG_CONFIG_HOME="$(mktemp -d)"
+CONFIG_FILE="${XDG_CONFIG_HOME}/threadplane/config.toml"
 SERVER_PID=""
 
 pick_port() {
@@ -35,7 +36,7 @@ export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="${neo4j_password}"
 export NEO4J_HTTP_PORT="${neo4j_http_port}"
 export NEO4J_BOLT_PORT="${neo4j_bolt_port}"
-export THREADPLANE_CONFIG="${CONFIG_FILE}"
+export XDG_CONFIG_HOME
 
 cleanup() {
     if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
@@ -43,11 +44,14 @@ cleanup() {
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
     rm -f "$CONFIG_FILE"
+    rmdir "${XDG_CONFIG_HOME}/threadplane" >/dev/null 2>&1 || true
+    rmdir "$XDG_CONFIG_HOME" >/dev/null 2>&1 || true
     docker compose -p "$PROJECT" down -v >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
 
+mkdir -p "$(dirname "$CONFIG_FILE")"
 cat >"$CONFIG_FILE" <<EOF
 [cli]
 url = "http://127.0.0.1:${server_port}"

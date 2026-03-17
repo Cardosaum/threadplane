@@ -9,17 +9,14 @@ use figment::{
 };
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
+use xdg::BaseDirectories;
 
-pub const SERVICE_NAME: &str = "threadplane";
-pub const DEFAULT_BIND_ADDR: &str = "127.0.0.1:4000";
-pub const DEFAULT_CONFIG_PATH: &str = "etc/config.toml";
-pub const DEFAULT_SYSTEM_CONFIG_PATH: &str = "/etc/threadplane/config.toml";
-pub const DEFAULT_SERVER_URL: &str = "http://127.0.0.1:4000";
-pub const DEFAULT_LEASE_SECONDS: i64 = 300;
+pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const DEPENDS_ON_RELATION: &str = "depends_on";
 pub const IMPLEMENTS_EPIC_RELATION: &str = "implements_epic";
 pub const ENV_CONFIG_PATH: &str = "THREADPLANE_CONFIG";
 pub const ENV_PREFIX: &str = "THREADPLANE__";
+pub const SERVICE_NAME: &str = "threadplane";
 pub const XANADU_RELATION: &str = "xanadu_link";
 
 #[derive(Debug, Snafu)]
@@ -32,6 +29,13 @@ pub enum ThreadplaneError {
         #[snafu(implicit)]
         location: snafu::Location,
     },
+
+    #[snafu(display("configuration discovery failed: {reason}"))]
+    ConfigPathUnavailable {
+        reason: String,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
 }
 
 impl ThreadplaneError {
@@ -39,7 +43,9 @@ impl ThreadplaneError {
     #[must_use]
     pub const fn location(&self) -> &snafu::Location {
         match self {
-            Self::ConfigLoad { location, .. } => location,
+            Self::ConfigPathUnavailable { location, .. } | Self::ConfigLoad { location, .. } => {
+                location
+            }
         }
     }
 }
@@ -49,40 +55,17 @@ pub struct CliConfig {
     pub url: String,
 }
 
-impl Default for CliConfig {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            url: DEFAULT_SERVER_URL.to_owned(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub bind: String,
-    pub database_url: Option<String>,
+    pub database_url: String,
     pub default_lease_seconds: i64,
-    pub neo4j_password: Option<String>,
-    pub neo4j_uri: Option<String>,
-    pub neo4j_user: Option<String>,
+    pub neo4j_password: String,
+    pub neo4j_uri: String,
+    pub neo4j_user: String,
 }
 
-impl Default for ServerConfig {
-    #[inline]
-    fn default() -> Self {
-        Self {
-            bind: DEFAULT_BIND_ADDR.to_owned(),
-            database_url: None,
-            default_lease_seconds: DEFAULT_LEASE_SECONDS,
-            neo4j_password: None,
-            neo4j_uri: None,
-            neo4j_user: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadplaneConfig {
     pub cli: CliConfig,
     pub server: ServerConfig,
@@ -140,37 +123,53 @@ pub struct LoadedThreadplaneConfig {
 }
 
 #[inline]
-#[must_use]
-pub fn default_config_path() -> PathBuf {
-    PathBuf::from(DEFAULT_CONFIG_PATH)
-}
-
-#[inline]
-#[must_use]
-pub fn default_system_config_path() -> PathBuf {
-    PathBuf::from(DEFAULT_SYSTEM_CONFIG_PATH)
-}
-
-#[inline]
-/// Loads layered runtime configuration from defaults, optional TOML, and environment overrides.
+/// Returns the primary XDG config path for `threadplane`.
 ///
 /// # Errors
 ///
-/// Returns an error when the optional config file cannot be parsed or when
-/// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
+/// Returns an error when the platform XDG base directories cannot be resolved.
+pub fn default_config_path() -> Result<PathBuf, ThreadplaneError> {
+    let directories = base_directories();
+    config_home(&directories)
+}
+
+#[inline]
+/// Returns the fallback XDG config search paths for `threadplane`.
+///
+/// # Errors
+///
+/// Returns an error when the platform XDG base directories cannot be resolved.
+pub fn default_system_config_paths() -> Result<Vec<PathBuf>, ThreadplaneError> {
+    let directories = base_directories();
+    Ok(directories
+        .get_config_dirs()
+        .into_iter()
+        .map(|path| path.join(CONFIG_FILE_NAME))
+        .collect())
+}
+
+#[inline]
+/// Loads layered runtime configuration from an optional TOML file, environment overrides,
+/// and serialized runtime overrides.
+///
+/// # Errors
+///
+/// Returns an error when configuration discovery fails, when the optional config file cannot be
+/// parsed, or when the gathered values cannot be deserialized into [`ThreadplaneConfig`].
 pub fn load_threadplane_config() -> Result<ThreadplaneConfig, ThreadplaneError> {
     load_threadplane_config_with_path(None).map(|loaded| loaded.config)
 }
 
 #[inline]
-/// Loads layered runtime configuration from defaults, optional TOML, and environment overrides.
+/// Loads layered runtime configuration from an optional TOML file, environment overrides,
+/// and serialized runtime overrides.
 ///
 /// `config_path` is an explicit one-off override, typically provided by a CLI flag.
 ///
 /// # Errors
 ///
-/// Returns an error when the optional config file cannot be parsed or when
-/// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
+/// Returns an error when configuration discovery fails, when the optional config file cannot be
+/// parsed, or when the gathered values cannot be deserialized into [`ThreadplaneConfig`].
 pub fn load_threadplane_config_with_path(
     config_path: Option<&Path>,
 ) -> Result<LoadedThreadplaneConfig, ThreadplaneError> {
@@ -178,7 +177,7 @@ pub fn load_threadplane_config_with_path(
 }
 
 #[inline]
-/// Loads layered runtime configuration from defaults, optional TOML, environment overrides,
+/// Loads layered runtime configuration from an optional TOML file, environment overrides,
 /// and serialized runtime overrides.
 ///
 /// `overrides` should be a sparse serializable structure where unset values are omitted, such as
@@ -186,76 +185,106 @@ pub fn load_threadplane_config_with_path(
 ///
 /// # Errors
 ///
-/// Returns an error when the optional config file cannot be parsed or when
-/// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
+/// Returns an error when configuration discovery fails, when the optional config file cannot be
+/// parsed, or when the gathered values cannot be deserialized into [`ThreadplaneConfig`].
 pub fn load_threadplane_config_with_overrides(
     config_path: Option<&Path>,
     overrides: &ThreadplaneConfigOverrides,
 ) -> Result<LoadedThreadplaneConfig, ThreadplaneError> {
-    let discovery = discover_threadplane_config(config_path);
-    let figment = threadplane_config_figment(&discovery, overrides);
-    let config = figment.extract().context(ConfigLoad)?;
+    let discovery = discover_threadplane_config(config_path)?;
+    let config = threadplane_config_figment(&discovery, overrides)
+        .extract()
+        .context(ConfigLoad)?;
 
     Ok(LoadedThreadplaneConfig { config, discovery })
 }
 
 #[inline]
-#[must_use]
-pub fn discover_threadplane_config(config_path: Option<&Path>) -> ConfigDiscovery {
+/// Resolves the config discovery order using explicit override, `THREADPLANE_CONFIG`,
+/// and XDG config locations.
+///
+/// # Errors
+///
+/// Returns an error when the platform XDG base directories cannot be resolved.
+pub fn discover_threadplane_config(
+    config_path: Option<&Path>,
+) -> Result<ConfigDiscovery, ThreadplaneError> {
     let env_override = config_path_from_env();
     let explicit_override = config_path.map(Path::to_path_buf);
-    let (search_order, selected_path) = resolve_config_path(config_path, env_override.clone());
+    let (search_order, selected_path) =
+        resolve_config_path(config_path, env_override.clone())?;
 
-    ConfigDiscovery {
+    Ok(ConfigDiscovery {
         env_override,
         explicit_override,
         search_order,
         selected_path,
         env_prefix: ENV_PREFIX,
-    }
+    })
 }
 
 #[inline]
-#[must_use]
 fn threadplane_config_figment(
     discovery: &ConfigDiscovery,
     overrides: &ThreadplaneConfigOverrides,
 ) -> Figment {
-    let base_figment = Figment::from(Serialized::defaults(ThreadplaneConfig::default()));
-    let layered_figment = if let Some(config_path) = discovery.selected_path.as_ref() {
-        base_figment.merge(Toml::file(config_path))
-    } else {
-        base_figment
-    };
-    let env_figment = layered_figment.merge(Env::prefixed(ENV_PREFIX).split("__"));
+    let file_layer = discovery.selected_path.as_ref().map_or_else(Figment::new, |config_path| {
+        Figment::new().merge(Toml::file(config_path))
+    });
 
-    env_figment.merge(Serialized::defaults(overrides))
+    file_layer
+        .merge(Env::prefixed(ENV_PREFIX).split("__"))
+        .merge(Serialized::defaults(overrides))
 }
 
 #[inline]
-#[must_use]
 fn resolve_config_path(
     explicit_override: Option<&Path>,
     env_override: Option<PathBuf>,
-) -> (Vec<PathBuf>, Option<PathBuf>) {
+) -> Result<(Vec<PathBuf>, Option<PathBuf>), ThreadplaneError> {
     if let Some(config_path) = explicit_override {
         let explicit_path = config_path.to_path_buf();
-        return (vec![explicit_path.clone()], Some(explicit_path));
+        return Ok((vec![explicit_path.clone()], Some(explicit_path)));
     }
 
     if let Some(config_path) = env_override {
-        return (vec![config_path.clone()], Some(config_path));
+        return Ok((vec![config_path.clone()], Some(config_path)));
     }
 
-    let local_path = default_config_path();
-    let system_path = default_system_config_path();
-    let search_order = vec![local_path.clone(), system_path.clone()];
-    let selected_path = local_path
-        .exists()
-        .then_some(local_path)
-        .or_else(|| system_path.exists().then_some(system_path));
+    let directories = base_directories();
+    let search_order = xdg_search_paths(&directories)?;
+    let selected_path = directories.find_config_file(CONFIG_FILE_NAME);
 
-    (search_order, selected_path)
+    Ok((search_order, selected_path))
+}
+
+#[inline]
+fn xdg_search_paths(directories: &BaseDirectories) -> Result<Vec<PathBuf>, ThreadplaneError> {
+    let mut search_order = vec![config_home(directories)?];
+    search_order.extend(
+        directories
+            .get_config_dirs()
+            .into_iter()
+            .map(|path| path.join(CONFIG_FILE_NAME)),
+    );
+    Ok(search_order)
+}
+
+#[inline]
+fn base_directories() -> BaseDirectories {
+    BaseDirectories::with_prefix(SERVICE_NAME)
+}
+
+fn config_home(directories: &BaseDirectories) -> Result<PathBuf, ThreadplaneError> {
+    directories
+        .get_config_home()
+        .map(|path| path.join(CONFIG_FILE_NAME))
+        .ok_or_else(|| {
+            ConfigPathUnavailable {
+                reason: "xdg config home is not available".to_owned(),
+            }
+            .build()
+        })
 }
 
 #[inline]
@@ -263,6 +292,7 @@ fn resolve_config_path(
 fn config_path_from_env() -> Option<PathBuf> {
     env::var(ENV_CONFIG_PATH)
         .ok()
+        .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }

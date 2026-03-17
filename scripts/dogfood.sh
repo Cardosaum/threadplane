@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_FILE="${ROOT_DIR}/etc/config.toml"
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+CONFIG_FILE="${CONFIG_HOME}/threadplane/config.toml"
 ENV_FILE="${ROOT_DIR}/.env"
 RUNTIME_DIR="${ROOT_DIR}/.local/threadplane"
 PID_FILE="${RUNTIME_DIR}/server.pid"

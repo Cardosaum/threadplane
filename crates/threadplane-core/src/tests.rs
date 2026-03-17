@@ -1,23 +1,18 @@
 use core::error::Error;
-use std::{
-    env,
-    fs,
-    io,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{io, path::PathBuf};
 
+use figment::Jail;
 use proptest::prelude::{any, Strategy};
 use proptest::{prop_assert, prop_assert_eq};
 use rstest::rstest;
 use uuid::Uuid;
 
 use crate::{
-    build_info, compare_build_info, default_config_path, default_system_config_path,
+    build_info, compare_build_info, default_config_path, default_system_config_paths,
     discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_overrides,
     load_threadplane_config_with_path, normalize_task_labels, normalize_task_owner,
     note_entity_ref, parse_entity_ref, relation_type, scope_summary, service_snapshot,
-    task_entity_ref, CliConfigOverrides, EntityRef, EventKind, TaskPriority, ThreadplaneConfig,
+    task_entity_ref, CliConfigOverrides, EntityRef, EventKind, TaskPriority,
     ThreadplaneConfigOverrides, ENV_PREFIX,
 };
 
@@ -168,108 +163,122 @@ fn compare_build_info_reports_field_differences() {
 }
 
 #[test]
-fn threadplane_config_defaults_match_local_poc_expectations() {
-    let config = ThreadplaneConfig::default();
+fn xdg_config_paths_use_threadplane_standard_locations() -> Result<(), Box<dyn Error>> {
+    let user_path = default_config_path()?;
+    let system_paths = default_system_config_paths()?;
 
-    assert_eq!(config.cli.url, "http://127.0.0.1:4000");
-    assert_eq!(config.server.bind, "127.0.0.1:4000");
-    assert_eq!(config.server.default_lease_seconds, 300);
-    assert_eq!(default_config_path().to_string_lossy(), "etc/config.toml");
-    assert_eq!(
-        default_system_config_path().to_string_lossy(),
-        "/etc/threadplane/config.toml"
-    );
-    assert_eq!(config.server.database_url, None);
-    assert_eq!(config.server.neo4j_password, None);
-    assert_eq!(config.server.neo4j_uri, None);
-    assert_eq!(config.server.neo4j_user, None);
+    if !user_path.to_string_lossy().ends_with("threadplane/config.toml") {
+        return Err(Box::new(io::Error::other("unexpected XDG user config path")));
+    }
+    if system_paths.is_empty() {
+        return Err(Box::new(io::Error::other("missing XDG system config paths")));
+    }
+    if !system_paths
+        .iter()
+        .all(|path| path.to_string_lossy().ends_with("threadplane/config.toml"))
+    {
+        return Err(Box::new(io::Error::other("unexpected XDG system config path")));
+    }
+
+    Ok(())
 }
 
 #[test]
-fn discover_threadplane_config_prefers_explicit_path() {
+fn discover_threadplane_config_prefers_explicit_path() -> Result<(), Box<dyn Error>> {
     let explicit_path = PathBuf::from("/tmp/threadplane-explicit.toml");
-    let discovery = discover_threadplane_config(Some(explicit_path.as_path()));
+    let discovery = discover_threadplane_config(Some(explicit_path.as_path()))?;
 
-    assert_eq!(discovery.explicit_override, Some(explicit_path.clone()));
-    assert_eq!(discovery.selected_path, Some(explicit_path.clone()));
-    assert_eq!(discovery.search_order, vec![explicit_path]);
-    assert_eq!(discovery.env_prefix, ENV_PREFIX);
-}
-
-#[test]
-fn load_threadplane_config_with_path_merges_toml_over_defaults() -> Result<(), Box<dyn Error>> {
-    let config_dir = temp_config_dir();
-    let config_path = config_dir.join("config.toml");
-    let config_body = r#"
-[cli]
-url = "http://127.0.0.1:4123"
-
-[server]
-bind = "127.0.0.1:4321"
-default_lease_seconds = 42
-"#;
-    fs::create_dir_all(&config_dir)?;
-    fs::write(&config_path, config_body)?;
-
-    let loaded = load_threadplane_config_with_path(Some(config_path.as_path()))?;
-
-    if loaded.config.cli.url != "http://127.0.0.1:4123" {
-        return Err(Box::new(io::Error::other("unexpected cli.url")));
+    if discovery.explicit_override != Some(explicit_path.clone()) {
+        return Err(Box::new(io::Error::other("unexpected explicit_override")));
     }
-    if loaded.config.server.bind != "127.0.0.1:4321" {
-        return Err(Box::new(io::Error::other("unexpected server.bind")));
-    }
-    if loaded.config.server.default_lease_seconds != 42 {
-        return Err(Box::new(io::Error::other(
-            "unexpected server.default_lease_seconds",
-        )));
-    }
-    if loaded.discovery.selected_path != Some(config_path) {
+    if discovery.selected_path != Some(explicit_path.clone()) {
         return Err(Box::new(io::Error::other("unexpected selected_path")));
     }
+    if discovery.search_order != vec![explicit_path] {
+        return Err(Box::new(io::Error::other("unexpected search_order")));
+    }
+    if discovery.env_prefix != ENV_PREFIX {
+        return Err(Box::new(io::Error::other("unexpected env_prefix")));
+    }
 
-    fs::remove_dir_all(config_dir)?;
     Ok(())
 }
 
 #[test]
-fn load_threadplane_config_with_overrides_applies_sparse_runtime_layer()
--> Result<(), Box<dyn Error>> {
-    let config_dir = temp_config_dir();
-    let config_path = config_dir.join("config.toml");
+#[expect(
+    clippy::result_large_err,
+    reason = "figment::Jail fixes the closure error type to figment::Result."
+)]
+fn load_threadplane_config_with_path_reads_explicit_config() {
+    Jail::expect_with(|jail| {
+        jail.create_file("config.toml", full_config_body())?;
+        let config_path = jail.directory().join("config.toml");
+        let loaded = load_threadplane_config_with_path(Some(config_path.as_path()))
+            .map_err(|error| error.to_string())?;
+
+        assert_eq!(loaded.config.cli.url, "http://127.0.0.1:4123");
+        assert_eq!(loaded.config.server.bind, "127.0.0.1:4321");
+        assert_eq!(
+            loaded.config.server.database_url,
+            "postgres://threadplane:secret@127.0.0.1:5432/threadplane"
+        );
+        assert_eq!(loaded.config.server.default_lease_seconds, 42);
+        assert_eq!(loaded.discovery.selected_path, Some(config_path));
+
+        Ok(())
+    });
+}
+
+#[test]
+#[expect(
+    clippy::result_large_err,
+    reason = "figment::Jail fixes the closure error type to figment::Result."
+)]
+fn load_threadplane_config_with_overrides_applies_sparse_runtime_layer() {
+    Jail::expect_with(|jail| {
+        jail.create_file("config.toml", full_config_body())?;
+        let config_path = jail.directory().join("config.toml");
+        let overrides = ThreadplaneConfigOverrides {
+            cli: Some(CliConfigOverrides {
+                url: Some("http://127.0.0.1:4999".to_owned()),
+            }),
+            ..ThreadplaneConfigOverrides::default()
+        };
+        let loaded =
+            load_threadplane_config_with_overrides(Some(config_path.as_path()), &overrides)
+                .map_err(|error| error.to_string())?;
+
+        assert_eq!(loaded.config.cli.url, "http://127.0.0.1:4999");
+        assert_eq!(loaded.config.server.bind, "127.0.0.1:4321");
+
+        Ok(())
+    });
+}
+
+#[test]
+#[expect(
+    clippy::result_large_err,
+    reason = "figment::Jail fixes the closure error type to figment::Result."
+)]
+fn load_threadplane_config_requires_all_fields_to_be_explicit() {
     let config_body = r#"
 [cli]
 url = "http://127.0.0.1:4123"
 
 [server]
 bind = "127.0.0.1:4321"
-default_lease_seconds = 42
 "#;
-    fs::create_dir_all(&config_dir)?;
-    fs::write(&config_path, config_body)?;
+    Jail::expect_with(|jail| {
+        jail.create_file("config.toml", config_body)?;
+        let config_path = jail.directory().join("config.toml");
 
-    let overrides = ThreadplaneConfigOverrides {
-        cli: Some(CliConfigOverrides {
-            url: Some("http://127.0.0.1:4999".to_owned()),
-        }),
-        ..ThreadplaneConfigOverrides::default()
-    };
-    let loaded =
-        load_threadplane_config_with_overrides(Some(config_path.as_path()), &overrides)?;
+        let load_result = load_threadplane_config_with_path(Some(config_path.as_path()));
+        assert!(load_result.is_err(), "incomplete config unexpectedly loaded");
+        let rendered = load_result.err().map(|error| error.to_string()).unwrap_or_default();
+        assert!(rendered.contains("configuration load failed"));
 
-    if loaded.config.cli.url != "http://127.0.0.1:4999" {
-        return Err(Box::new(io::Error::other(
-            "runtime override did not win over file config",
-        )));
-    }
-    if loaded.config.server.bind != "127.0.0.1:4321" {
-        return Err(Box::new(io::Error::other(
-            "sparse runtime override should not disturb other config keys",
-        )));
-    }
-
-    fs::remove_dir_all(config_dir)?;
-    Ok(())
+        Ok(())
+    });
 }
 
 #[rstest]
@@ -341,10 +350,17 @@ proptest::proptest! {
     }
 }
 
-fn temp_config_dir() -> PathBuf {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    env::temp_dir().join(format!("threadplane-core-config-{timestamp}"))
+fn full_config_body() -> &'static str {
+    r#"
+[cli]
+url = "http://127.0.0.1:4123"
+
+[server]
+bind = "127.0.0.1:4321"
+database_url = "postgres://threadplane:secret@127.0.0.1:5432/threadplane"
+default_lease_seconds = 42
+neo4j_password = "neo4j-secret"
+neo4j_uri = "127.0.0.1:7687"
+neo4j_user = "neo4j"
+"#
 }

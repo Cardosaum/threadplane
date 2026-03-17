@@ -58,7 +58,7 @@ Most agent tooling gets one part right and leaves the rest as an exercise:
 That creates:
 
 - `.env` for Docker Compose and local database credentials
-- `etc/config.toml` for `threadplane-server` and `threadplane-cli`
+- `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml` for `threadplane-server` and `threadplane-cli`
 
 2. Start PostgreSQL and Neo4j:
 
@@ -333,12 +333,12 @@ Global options:
 
 ## Configuration
 
-`threadplane` starts from built-in defaults, then layers config in this order:
+`threadplane` does not ship implicit runtime defaults. Every runtime value must come from config, environment, or explicit overrides, layered in this order:
 
 1. `--config /path/to/config.toml` for explicit one-off CLI runs
 2. `THREADPLANE_CONFIG=/path/to/config.toml`
-3. repo-local `etc/config.toml`
-4. system config at `/etc/threadplane/config.toml`
+3. XDG user config at `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
+4. XDG system config directories such as `/etc/xdg/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
 6. CLI runtime overrides such as `--server`
 

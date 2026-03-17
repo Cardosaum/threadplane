@@ -25,8 +25,8 @@ use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::error::{
-    BindListener, ConnectNeo4j, ConnectPostgres, InvalidBindAddress, LoadConfig, MissingConfig,
-    Serve, VerifyNeo4j,
+    BindListener, ConnectNeo4j, ConnectPostgres, InvalidBindAddress, LoadConfig, Serve,
+    VerifyNeo4j,
 };
 use crate::{
     error::ServerResult,
@@ -244,24 +244,13 @@ impl AppConfig {
 
         Ok(Self {
             bind_addr,
-            database_url: required_config("server.database_url", config.server.database_url)?,
-            neo4j_uri: required_config("server.neo4j_uri", config.server.neo4j_uri)?,
-            neo4j_user: required_config("server.neo4j_user", config.server.neo4j_user)?,
-            neo4j_password: required_config("server.neo4j_password", config.server.neo4j_password)?,
+            database_url: config.server.database_url,
+            neo4j_uri: config.server.neo4j_uri,
+            neo4j_user: config.server.neo4j_user,
+            neo4j_password: config.server.neo4j_password,
             default_lease_seconds: config.server.default_lease_seconds,
         })
     }
-}
-
-fn required_config(key: &str, value: Option<String>) -> ServerResult<String> {
-    value
-        .filter(|candidate| !candidate.is_empty())
-        .ok_or_else(|| {
-            MissingConfig {
-                key: key.to_owned(),
-            }
-            .build()
-        })
 }
 
 fn build_router(state: AppState) -> Router {

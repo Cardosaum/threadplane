@@ -3,7 +3,7 @@
 /.env
 /.env.*
 !/.env.example
-/etc/config.toml
+etc/config.toml
 /.idea
 /.vscode
 /.DS_Store

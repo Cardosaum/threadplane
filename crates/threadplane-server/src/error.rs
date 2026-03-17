@@ -45,13 +45,6 @@ pub(crate) enum ThreadplaneServerError {
         location: Location,
     },
 
-    #[snafu(display("missing required configuration value {key}"))]
-    MissingConfig {
-        key: String,
-        #[snafu(implicit)]
-        location: Location,
-    },
-
     #[snafu(display("failed to bind threadplane server to {bind_addr}"))]
     BindListener {
         bind_addr: SocketAddr,
@@ -178,7 +171,6 @@ impl ThreadplaneServerError {
         match self {
             Self::LoadConfig { location, .. }
             | Self::InvalidBindAddress { location, .. }
-            | Self::MissingConfig { location, .. }
             | Self::BindListener { location, .. }
             | Self::ConnectPostgres { location, .. }
             | Self::ConnectNeo4j { location, .. }
@@ -203,7 +195,6 @@ impl ThreadplaneServerError {
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::LoadConfig { .. }
             | Self::InvalidBindAddress { .. }
-            | Self::MissingConfig { .. }
             | Self::BindListener { .. }
             | Self::ConnectPostgres { .. }
             | Self::ConnectNeo4j { .. }
@@ -227,7 +218,6 @@ impl ThreadplaneServerError {
             Self::GraphDecode { source, .. } => source.to_string(),
             Self::LoadConfig { .. }
             | Self::InvalidBindAddress { .. }
-            | Self::MissingConfig { .. }
             | Self::BindListener { .. }
             | Self::ConnectPostgres { .. }
             | Self::ConnectNeo4j { .. }
