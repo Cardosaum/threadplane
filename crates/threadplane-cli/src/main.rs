@@ -9,6 +9,14 @@ pub(crate) mod http;
 #[cfg(test)]
 mod tests;
 
-fn main() -> error::Result<()> {
-    app::run()
+use std::process::ExitCode;
+
+fn main() -> ExitCode {
+    match app::run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
 }

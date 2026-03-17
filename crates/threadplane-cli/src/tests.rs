@@ -1,9 +1,13 @@
+use std::io::Error as IoError;
+
+use snafu::IntoError as _;
 use uuid::Uuid;
 
 use crate::command::{
     build_mismatch_warning, dedup_task_ids, render_task_dependency_compact,
     render_task_list_compact, triage_has_changes,
 };
+use crate::error::{ContractMismatchDetails, JsonContractMismatch};
 use threadplane_core::{
     build_info, compare_build_info, EpicRecord, TaskClaimRecord, TaskDependencySummary,
     TaskListEntry, TaskMetadata, TaskPriority, TaskSummary,
@@ -43,6 +47,28 @@ fn build_mismatch_warning_is_absent_when_builds_match() {
     let comparison = compare_build_info(&client, &server);
 
     assert!(build_mismatch_warning(&comparison).is_none());
+}
+
+#[test]
+fn contract_mismatch_error_mentions_build_compare_guidance() {
+    let error = JsonContractMismatch {
+        details: Box::new(ContractMismatchDetails {
+            changed_fields: "version, git_commit".to_owned(),
+            cli_commit: "aaaaaaaaaaaa".to_owned(),
+            cli_version: "0.1.0".to_owned(),
+            server_commit: "bbbbbbbbbbbb".to_owned(),
+            server_version: "0.2.0".to_owned(),
+        }),
+        url: "http://127.0.0.1:4000/v1/workspaces/threadplane-dev/tasks".to_owned(),
+    }
+    .into_error(serde_json::Error::io(IoError::other("missing field `labels`")));
+
+    let rendered = error.to_string();
+
+    assert!(rendered.contains("different contract"));
+    assert!(rendered.contains("Run `threadplane build compare`"));
+    assert!(rendered.contains("0.1.0"));
+    assert!(rendered.contains("0.2.0"));
 }
 
 #[test]
