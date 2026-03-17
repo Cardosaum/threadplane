@@ -157,6 +157,8 @@ cargo run -p threadplane-cli -- task list \
   --format compact
 ```
 
+Ready queues come back ordered by priority first and then recency, so the first compact rows are the best next picks for people and agents.
+
 Bulk-triage multiple backlog items at once:
 
 ```bash

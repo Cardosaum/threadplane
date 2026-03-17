@@ -9,9 +9,9 @@ use crate::{
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
-    storage::{event_kind_name, parse_event_kind, schema_statements},
+    storage::{event_kind_name, parse_event_kind, schema_statements, task_priority_rank},
 };
-use threadplane_core::EventKind;
+use threadplane_core::{EventKind, TaskPriority};
 
 #[test]
 fn current_build_info_reports_compiled_server_identity() {
@@ -95,6 +95,15 @@ fn schema_statements_cover_poc_storage_surfaces(#[case] expected_fragment: &str)
         has_fragment,
         "missing schema statement fragment: {expected_fragment}"
     );
+}
+
+#[rstest]
+#[case(TaskPriority::Low, 0)]
+#[case(TaskPriority::Medium, 1)]
+#[case(TaskPriority::High, 2)]
+#[case(TaskPriority::Urgent, 3)]
+fn task_priority_rank_orders_ready_queues(#[case] priority: TaskPriority, #[case] expected: u8) {
+    assert_eq!(task_priority_rank(priority), expected);
 }
 
 proptest::proptest! {

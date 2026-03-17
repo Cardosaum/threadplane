@@ -630,6 +630,7 @@ pub(crate) async fn fetch_tasks_for_listing(
                 ready_rows.push(row);
             }
         }
+        sort_task_rows_for_queue(&mut ready_rows);
         return Ok(ready_rows);
     }
 
@@ -1206,6 +1207,27 @@ fn task_metadata_from_row(value: &TaskRow) -> TaskMetadata {
 
 fn parse_task_priority(value: &str) -> TaskPriority {
     value.parse().unwrap_or_default()
+}
+
+fn sort_task_rows_for_queue(rows: &mut [TaskRow]) {
+    rows.sort_by(|left, right| {
+        let left_priority = task_priority_rank(parse_task_priority(&left.priority));
+        let right_priority = task_priority_rank(parse_task_priority(&right.priority));
+
+        right_priority
+            .cmp(&left_priority)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| right.created_at.cmp(&left.created_at))
+    });
+}
+
+pub(crate) const fn task_priority_rank(priority: TaskPriority) -> u8 {
+    match priority {
+        TaskPriority::Low => 0,
+        TaskPriority::Medium => 1,
+        TaskPriority::High => 2,
+        TaskPriority::Urgent => 3,
+    }
 }
 
 impl From<ClaimRow> for TaskClaimRecord {

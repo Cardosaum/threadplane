@@ -204,6 +204,19 @@ complete_dependency_json="$(
 )"
 [[ "$(jq -r '.data.status' <<<"$complete_dependency_json")" == "completed" ]]
 
+low_priority_task_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task offer \
+        --workspace "$WORKSPACE" \
+        --author operator \
+        --priority low \
+        --owner backlog \
+        --label queue \
+        --title "Archive stale benchmark notes" \
+        --details "A lower-priority ready task used to verify queue ordering."
+)"
+low_priority_task_id="$(jq -r '.data.task_id' <<<"$low_priority_task_json")"
+
 ready_tasks_json="$(
     cargo run -q -p threadplane-cli -- \
         task list \
@@ -211,8 +224,9 @@ ready_tasks_json="$(
         --status open \
         --ready-only
 )"
-[[ "$(jq -r '.data | length' <<<"$ready_tasks_json")" == "1" ]]
+[[ "$(jq -r '.data | length' <<<"$ready_tasks_json")" == "2" ]]
 [[ "$(jq -r '.data[0].task.task_id' <<<"$ready_tasks_json")" == "$task_id" ]]
+[[ "$(jq -r '.data[1].task.task_id' <<<"$ready_tasks_json")" == "$low_priority_task_id" ]]
 
 compact_ready_queue="$(
     cargo run -q -p threadplane-cli -- \
@@ -228,6 +242,7 @@ compact_ready_queue="$(
 [[ "$compact_ready_queue" == *"priority=high"* ]]
 [[ "$compact_ready_queue" == *"owner=codex"* ]]
 [[ "$compact_ready_queue" == *"labels=agent,workflow"* ]]
+[[ "$compact_ready_queue" != *"Archive stale benchmark notes"* ]]
 
 note_json="$(
     cargo run -q -p threadplane-cli -- \

@@ -107,6 +107,8 @@ cargo run -p threadplane-cli -- task list \
   --format compact
 ```
 
+When `--ready-only` is set, threadplane sorts the queue by priority first and then recency, which makes the compact view a practical next-work picker for people and agents.
+
 Create a note:
 
 ```bash
