@@ -33,3 +33,7 @@ uuid.workspace = true
 
 [build-dependencies]
 threadplane-build = { path = "../threadplane-build" }
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true

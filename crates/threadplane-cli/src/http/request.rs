@@ -46,7 +46,9 @@ mod tests {
         reason = "Test failures should print the underlying builder error clearly."
     )]
 
+    use proptest::prelude::*;
     use reqwest::{blocking::Client, header::HeaderValue, Method};
+    use rstest::rstest;
 
     use super::{JsonRequest, RequestMetadata};
     use crate::http::{target::RequestTarget, transport::ServerTransport};
@@ -59,14 +61,22 @@ mod tests {
         }};
     }
 
-    #[test]
-    fn json_request_keeps_optional_body_and_metadata() {
+    #[rstest]
+    #[case(Method::PATCH, Some("command-1"))]
+    #[case(Method::POST, None)]
+    #[case(Method::PUT, Some("command-2"))]
+    fn json_request_keeps_optional_body_and_metadata(
+        #[case] method: Method,
+        #[case] idempotency_key: Option<&str>,
+    ) {
         let body = serde_json::json!({"title":"test"});
-        let request = patch_request!(body);
+        let request = JsonRequest::<_, serde_json::Value>::new(method.clone(), "/v1/tasks/123")
+            .with_body(&body)
+            .with_idempotency_key(idempotency_key);
 
         assert!(request.body.is_some());
-        assert_eq!(request.metadata.idempotency_key, Some("command-1"));
-        assert_eq!(request.metadata.method, Method::PATCH);
+        assert_eq!(request.metadata.idempotency_key, idempotency_key);
+        assert_eq!(request.metadata.method, method);
     }
 
     #[test]
@@ -95,14 +105,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn request_metadata_keeps_optional_idempotency_key() {
+    #[rstest]
+    #[case(Some("abc"))]
+    #[case(None)]
+    fn request_metadata_keeps_optional_idempotency_key(#[case] idempotency_key: Option<&str>) {
         let metadata = RequestMetadata::builder()
-            .idempotency_key("abc")
             .method(Method::POST)
+            .maybe_idempotency_key(idempotency_key)
             .build();
 
-        assert_eq!(metadata.idempotency_key, Some("abc"));
+        assert_eq!(metadata.idempotency_key, idempotency_key);
     }
 
     #[test]
@@ -118,5 +130,23 @@ mod tests {
                 .as_str(),
             "http://127.0.0.1:4000/v1/tasks"
         );
+    }
+
+    proptest! {
+        #[test]
+        fn request_preserves_user_supplied_path(
+            segment in "[a-z0-9]{1,8}",
+            suffix in proptest::option::of("[a-z0-9]{1,8}"),
+        ) {
+            let path = match suffix {
+                Some(suffix) => format!("/{segment}/{suffix}"),
+                None => format!("/{segment}"),
+            };
+            let request = JsonRequest::<(), serde_json::Value>::new(Method::GET, &path);
+
+            prop_assert_eq!(request.path, path.as_str());
+            prop_assert_eq!(request.metadata.method, Method::GET);
+            prop_assert!(request.body.is_none());
+        }
     }
 }

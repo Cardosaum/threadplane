@@ -39,11 +39,21 @@ mod tests {
         reason = "Test failures should print the underlying builder error clearly."
     )]
 
+    use proptest::prelude::*;
+    use rstest::rstest;
+
     use super::RequestTarget;
 
-    #[test]
-    fn request_target_trims_the_server_suffix_only() {
-        let target = RequestTarget::new("http://127.0.0.1:4000/")
+    #[rstest]
+    #[case("http://127.0.0.1:4000", "http://127.0.0.1:4000/", "http://127.0.0.1:4000/v1/tasks")]
+    #[case("http://127.0.0.1:4000/", "http://127.0.0.1:4000/", "http://127.0.0.1:4000/v1/tasks")]
+    #[case("http://127.0.0.1:4000/api", "http://127.0.0.1:4000/api/", "http://127.0.0.1:4000/api/v1/tasks")]
+    fn request_target_normalizes_base_urls(
+        #[case] server: &str,
+        #[case] expected_root: &str,
+        #[case] expected_request: &str,
+    ) {
+        let target = RequestTarget::new(server)
             .unwrap_or_else(|error| panic!("target should build: {error}"));
 
         assert_eq!(
@@ -51,8 +61,30 @@ mod tests {
                 .request_url("/v1/tasks")
                 .unwrap_or_else(|error| panic!("url should build: {error}"))
                 .as_str(),
-            "http://127.0.0.1:4000/v1/tasks"
+            expected_request
         );
-        assert_eq!(target.root_url().as_str(), "http://127.0.0.1:4000/");
+        assert_eq!(target.root_url().as_str(), expected_root);
+    }
+
+    proptest! {
+        #[test]
+        fn request_target_joins_paths_without_double_slashes(
+            first in "[a-z0-9]{1,8}",
+            second in proptest::option::of("[a-z0-9]{1,8}"),
+        ) {
+            let target = RequestTarget::new("http://127.0.0.1:4000/")
+                .unwrap_or_else(|error| panic!("target should build: {error}"));
+            let path = match second {
+                Some(second) => format!("/{first}/{second}"),
+                None => format!("/{first}"),
+            };
+            let joined = target
+                .request_url(&path)
+                .unwrap_or_else(|error| panic!("url should build: {error}"));
+
+            prop_assert!(joined.as_str().starts_with("http://127.0.0.1:4000/"));
+            prop_assert_eq!(joined.path(), path);
+            prop_assert!(!joined.as_str().contains("//v1"));
+        }
     }
 }
