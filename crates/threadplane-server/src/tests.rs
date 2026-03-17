@@ -19,13 +19,10 @@ use crate::{
     },
     migration::{
         COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, PERFORMANCE_INDEXES_MIGRATION_SQL,
-        PROJECTION_OFFSETS_MIGRATION_SQL,
+        PROJECTION_OFFSETS_MIGRATION_SQL, WORKSPACE_GOVERNANCE_MIGRATION_SQL,
     },
     projections::deduplicate_graph_relations,
-    storage::{
-        build_projection_status, event_kind_name, parse_event_kind, task_priority_rank,
-        ProjectionCursor,
-    },
+    storage::{build_projection_status, event_kind_name, parse_event_kind, ProjectionCursor},
 };
 use threadplane_core::{EventKind, GraphRelation, TaskPriority};
 
@@ -155,12 +152,29 @@ fn performance_indexes_migration_covers_replay_and_claim_lookups(#[case] expecte
 }
 
 #[rstest]
-#[case(TaskPriority::Low, 0)]
-#[case(TaskPriority::Medium, 1)]
-#[case(TaskPriority::High, 2)]
-#[case(TaskPriority::Urgent, 3)]
-fn task_priority_rank_orders_ready_queues(#[case] priority: TaskPriority, #[case] expected: u8) {
-    assert_eq!(task_priority_rank(priority), expected);
+#[case("CREATE TABLE IF NOT EXISTS workspace_policies")]
+#[case("CREATE TABLE IF NOT EXISTS workspace_priorities")]
+#[case("CREATE TABLE IF NOT EXISTS workspace_memberships")]
+#[case("CREATE TABLE IF NOT EXISTS actor_public_keys")]
+#[case("CREATE INDEX IF NOT EXISTS idx_workspace_priorities_workspace_rank")]
+fn workspace_governance_migration_covers_policy_membership_and_key_storage(
+    #[case] expected_fragment: &str,
+) {
+    let has_fragment = WORKSPACE_GOVERNANCE_MIGRATION_SQL.contains(expected_fragment);
+    assert!(
+        has_fragment,
+        "missing migration fragment: {expected_fragment}"
+    );
+}
+
+#[test]
+fn task_priority_newtype_normalizes_storage_values() {
+    assert_eq!(
+        TaskPriority::new("Urgent Fix")
+            .map(|priority| priority.to_string())
+            .as_deref(),
+        Some("urgent_fix")
+    );
 }
 
 #[test]

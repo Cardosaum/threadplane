@@ -52,6 +52,48 @@ default_lease_seconds = 300
 neo4j_password = "${neo4j_password}"
 neo4j_uri = "127.0.0.1:7687"
 neo4j_user = "neo4j"
+
+[server.workspace_bootstrap.auth]
+allowed_algorithms = ["ssh_ed25519"]
+challenge_ttl_seconds = 90
+signed_commands_required = true
+
+[server.workspace_bootstrap.priorities]
+default_priority = "medium"
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "low"
+rank = 10
+description = "Useful but not urgent."
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "medium"
+rank = 20
+description = "Default day-to-day work."
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "high"
+rank = 30
+description = "Should be pulled forward."
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "urgent"
+rank = 40
+description = "Drop other work and handle this now."
+
+[[server.workspace_bootstrap.memberships]]
+actor_id = "operator"
+role = "admin"
+
+[[server.workspace_bootstrap.memberships]]
+actor_id = "codex"
+role = "editor"
+
+[[server.workspace_bootstrap.public_keys]]
+actor_id = "operator"
+algorithm = "ssh_ed25519"
+key_id = "local"
+public_key = "ssh-ed25519 AAAATEST threadplane@example"
 EOF
 
 echo "generated $ENV_FILE"

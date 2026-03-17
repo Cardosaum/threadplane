@@ -31,25 +31,31 @@ use crate::{
     },
     replay::GRAPH_PROJECTION_NAME,
     storage::{
-        append_event, append_task_dependency, build_task_list_entries, fetch_active_claim,
-        fetch_active_claim_tx, fetch_dependency_chain, fetch_dependent_chain,
-        fetch_direct_dependencies, fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx,
-        fetch_entity_record, fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
+        append_event, append_task_dependency, build_task_list_entries, ensure_workspace_governance,
+        fetch_active_claim, fetch_active_claim_tx, fetch_actor_public_keys,
+        fetch_dependency_chain, fetch_dependent_chain, fetch_direct_dependencies,
+        fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx, fetch_entity_record,
+        fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
         fetch_event_rows_after_workspace_cursor, fetch_event_rows_for_workspace, fetch_note_by_id,
         fetch_note_by_id_tx, fetch_notes_for_listing, fetch_projection_status, fetch_task_by_id,
-        fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group, record_projection_cursor,
-        sync_transclusion_members, task_is_ready, unique_task_ids, update_transclusion_group,
-        NoteListFilters, TaskListFilters, TaskRow,
+        fetch_task_by_id_tx, fetch_tasks_for_listing, fetch_workspace_memberships,
+        prepare_xanadu_group, record_projection_cursor,
+        require_workspace_role, sync_transclusion_members, task_is_ready, unique_task_ids,
+        update_transclusion_group, upsert_actor_public_key, upsert_workspace_membership,
+        upsert_workspace_policy, workspace_supports_priority, NoteListFilters, TaskListFilters,
+        TaskRow,
     },
 };
 use threadplane_core::{
     health_summary, normalize_task_labels, normalize_task_owner, scope_summary, service_snapshot,
-    AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimNextTaskRequest,
-    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityContext, EpicRecord, EventKind, EventRecord, LinkRecord,
-    NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot,
-    TaskClaimRecord, TaskContext, TaskDag, TaskListEntry, TaskPriority, TaskRecord,
-    UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
+    AddLinkRequest, AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ActorPublicKey,
+    ApiEnvelope, ClaimNextTaskRequest, ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest,
+    CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EpicRecord, EventKind,
+    EventRecord, GrantWorkspaceMembershipRequest, LinkRecord, NoteRecord, OfferTaskRequest,
+    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest,
+    UpdateWorkspacePolicyRequest, WorkspaceMembership, WorkspacePolicy, WorkspaceRole,
+    DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -82,6 +88,11 @@ pub(crate) struct TaskListQuery {
     priority: Option<TaskPriority>,
     ready_only: Option<bool>,
     status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WorkspaceKeysQuery {
+    actor_id: Option<String>,
 }
 
 fn with_projection_status(
@@ -125,6 +136,57 @@ fn idempotency_key(headers: &HeaderMap) -> ServerResult<Option<&str>> {
             })
         })
         .transpose()
+}
+
+async fn ensure_workspace_policy(state: &AppState, workspace: &str) -> ServerResult<WorkspacePolicy> {
+    ensure_workspace_governance(state.pool(), workspace, state.bootstrap()).await
+}
+
+async fn require_workspace_editor(
+    state: &AppState,
+    workspace: &str,
+    actor: &str,
+) -> ServerResult<WorkspaceRole> {
+    ensure_workspace_policy(state, workspace).await?;
+    require_workspace_role(
+        state.pool(),
+        workspace,
+        actor,
+        WorkspaceRole::can_edit,
+        "edit workspace state",
+    )
+    .await
+}
+
+async fn require_workspace_admin(
+    state: &AppState,
+    workspace: &str,
+    actor: &str,
+) -> ServerResult<WorkspaceRole> {
+    ensure_workspace_policy(state, workspace).await?;
+    require_workspace_role(
+        state.pool(),
+        workspace,
+        actor,
+        WorkspaceRole::can_administer,
+        "administer workspace policy",
+    )
+    .await
+}
+
+async fn ensure_supported_task_priority(
+    state: &AppState,
+    workspace: &str,
+    priority: &TaskPriority,
+) -> ServerResult<()> {
+    ensure_workspace_policy(state, workspace).await?;
+    if workspace_supports_priority(state.pool(), workspace, priority).await? {
+        return Ok(());
+    }
+
+    Err(ThreadplaneServerError::bad_request(format!(
+        "unsupported task priority `{priority}` in workspace {workspace}"
+    )))
 }
 
 async fn persist_task_update(
@@ -308,7 +370,7 @@ fn task_selection_filters(query: &TaskListQuery) -> TaskListFilters<'_> {
         epic_id: query.epic_id,
         label: query.label.as_deref(),
         owner: query.owner.as_deref(),
-        priority: query.priority,
+        priority: query.priority.clone(),
         ready_only: query.ready_only.unwrap_or(false),
         status: query.status.as_deref(),
     }
@@ -411,6 +473,7 @@ pub(crate) async fn create_epic(
     headers: HeaderMap,
     Json(request): Json<CreateEpicRequest>,
 ) -> AppResult<EpicRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.author).await?;
     let mut tx = state.pool().begin().await?;
     let epic_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -519,6 +582,7 @@ pub(crate) async fn create_note(
     headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> AppResult<NoteRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.author).await?;
     let mut tx = state.pool().begin().await?;
     let note_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -605,6 +669,7 @@ pub(crate) async fn list_notes(
     Path(workspace): Path<String>,
     Query(query): Query<NoteListQuery>,
 ) -> AppResult<Vec<NoteRecord>> {
+    ensure_workspace_policy(&state, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_notes_for_listing(
         state.pool(),
@@ -625,6 +690,7 @@ pub(crate) async fn update_note(
     headers: HeaderMap,
     Json(request): Json<UpdateNoteRequest>,
 ) -> AppResult<NoteRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -717,6 +783,8 @@ pub(crate) async fn offer_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
+    require_workspace_editor(&state, &request.workspace, &request.author).await?;
+    ensure_supported_task_priority(&state, &request.workspace, &request.metadata.priority).await?;
     let mut tx = state.pool().begin().await?;
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
@@ -821,6 +889,8 @@ pub(crate) async fn update_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    ensure_supported_task_priority(&state, &request.workspace, &request.metadata.priority).await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -884,6 +954,7 @@ pub(crate) async fn claim_task(
     headers: HeaderMap,
     Json(request): Json<ClaimTaskRequest>,
 ) -> AppResult<TaskClaimRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
     let mut tx = state.pool().begin().await?;
@@ -939,6 +1010,7 @@ pub(crate) async fn release_task(
     headers: HeaderMap,
     Json(request): Json<ReleaseTaskRequest>,
 ) -> AppResult<TaskRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let released_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1030,6 +1102,7 @@ pub(crate) async fn complete_task(
     headers: HeaderMap,
     Json(request): Json<CompleteTaskRequest>,
 ) -> AppResult<TaskRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let completed_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1119,6 +1192,7 @@ pub(crate) async fn add_task_dependency(
     headers: HeaderMap,
     Json(request): Json<AddTaskDependencyRequest>,
 ) -> AppResult<Value> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1179,6 +1253,7 @@ pub(crate) async fn add_link(
     headers: HeaderMap,
     Json(request): Json<AddLinkRequest>,
 ) -> AppResult<LinkRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1271,6 +1346,7 @@ pub(crate) async fn add_xanadu_link(
     headers: HeaderMap,
     Json(request): Json<CreateXanaduLinkRequest>,
 ) -> AppResult<LinkRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let request_payload = build_xanadu_request_payload(&request);
@@ -1401,8 +1477,110 @@ pub(crate) async fn list_epics(
     State(state): State<AppState>,
     Path(workspace): Path<String>,
 ) -> AppResult<Vec<EpicRecord>> {
+    ensure_workspace_policy(&state, &workspace).await?;
     let rows = fetch_epic_rows_for_workspace(state.pool(), &workspace).await?;
     let data = rows.into_iter().map(EpicRecord::from).collect();
+    Ok(success(data))
+}
+
+pub(crate) async fn show_workspace_policy(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+) -> AppResult<WorkspacePolicy> {
+    let data = ensure_workspace_policy(&state, &workspace).await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn update_workspace_policy(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Json(request): Json<UpdateWorkspacePolicyRequest>,
+) -> AppResult<WorkspacePolicy> {
+    if request.workspace != workspace {
+        return Err(ThreadplaneServerError::bad_request(
+            "request workspace must match the path workspace",
+        ));
+    }
+
+    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    let data = upsert_workspace_policy(
+        state.pool(),
+        &WorkspacePolicy {
+            auth: request.auth,
+            priorities: request.priorities,
+            workspace,
+        },
+    )
+    .await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn list_workspace_memberships(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+) -> AppResult<Vec<WorkspaceMembership>> {
+    ensure_workspace_policy(&state, &workspace).await?;
+    let data = fetch_workspace_memberships(state.pool(), &workspace).await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn grant_workspace_membership(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Json(request): Json<GrantWorkspaceMembershipRequest>,
+) -> AppResult<WorkspaceMembership> {
+    if request.workspace != workspace {
+        return Err(ThreadplaneServerError::bad_request(
+            "request workspace must match the path workspace",
+        ));
+    }
+
+    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    let data = upsert_workspace_membership(
+        state.pool(),
+        &WorkspaceMembership {
+            actor_id: request.member_actor_id,
+            role: request.role,
+            workspace,
+        },
+    )
+    .await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn list_workspace_public_keys(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<WorkspaceKeysQuery>,
+) -> AppResult<Vec<ActorPublicKey>> {
+    ensure_workspace_policy(&state, &workspace).await?;
+    let data = fetch_actor_public_keys(state.pool(), &workspace, query.actor_id.as_deref()).await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn add_workspace_public_key(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Json(request): Json<AddWorkspacePublicKeyRequest>,
+) -> AppResult<ActorPublicKey> {
+    if request.workspace != workspace {
+        return Err(ThreadplaneServerError::bad_request(
+            "request workspace must match the path workspace",
+        ));
+    }
+
+    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    let data = upsert_actor_public_key(
+        state.pool(),
+        &workspace,
+        &ActorPublicKey {
+            actor_id: request.member_actor_id,
+            algorithm: request.algorithm,
+            key_id: request.key_id,
+            public_key: request.public_key,
+        },
+    )
+    .await?;
     Ok(success(data))
 }
 
@@ -1411,6 +1589,7 @@ pub(crate) async fn list_tasks(
     Path(workspace): Path<String>,
     Query(query): Query<TaskListQuery>,
 ) -> AppResult<Vec<TaskListEntry>> {
+    ensure_workspace_policy(&state, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_tasks_for_listing(
         state.pool(),
@@ -1428,6 +1607,7 @@ pub(crate) async fn next_task(
     Path(workspace): Path<String>,
     Query(query): Query<TaskListQuery>,
 ) -> AppResult<Option<TaskListEntry>> {
+    ensure_workspace_policy(&state, &workspace).await?;
     let row = fetch_tasks_for_listing(state.pool(), &workspace, task_next_filters(&query), Some(1))
         .await?
         .into_iter()
@@ -1445,6 +1625,7 @@ pub(crate) async fn list_open_tasks(
     State(state): State<AppState>,
     Path(workspace): Path<String>,
 ) -> AppResult<Vec<TaskListEntry>> {
+    ensure_workspace_policy(&state, &workspace).await?;
     let rows = fetch_tasks_for_listing(
         state.pool(),
         &workspace,
@@ -1465,13 +1646,17 @@ pub(crate) async fn claim_next_task(
     headers: HeaderMap,
     Json(request): Json<ClaimNextTaskRequest>,
 ) -> AppResult<Option<TaskClaimRecord>> {
+    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    if let Some(priority) = &request.priority {
+        ensure_supported_task_priority(&state, &request.workspace, priority).await?;
+    }
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
     let filters = TaskListFilters {
         epic_id: request.epic_id,
         label: request.label.as_deref(),
         owner: request.owner.as_deref(),
-        priority: request.priority,
+        priority: request.priority.clone(),
         ready_only: true,
         status: Some("open"),
     };

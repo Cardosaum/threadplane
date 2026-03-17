@@ -306,12 +306,16 @@ fn normalize_task_owner_trims_and_discards_empty_values(
 }
 
 #[rstest]
-#[case("low", TaskPriority::Low)]
-#[case("medium", TaskPriority::Medium)]
-#[case("high", TaskPriority::High)]
-#[case("urgent", TaskPriority::Urgent)]
-fn task_priority_parses_snake_case_values(#[case] input: &str, #[case] expected: TaskPriority) {
-    assert_eq!(input.parse::<TaskPriority>().ok(), Some(expected));
+#[case("low", "low")]
+#[case("medium", "medium")]
+#[case("high", "high")]
+#[case("urgent", "urgent")]
+#[case("Urgent Fix", "urgent_fix")]
+fn task_priority_parses_and_normalizes_values(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(
+        input.parse::<TaskPriority>().ok().map(|priority| priority.to_string()),
+        Some(expected.to_owned())
+    );
 }
 
 #[rstest]
@@ -428,6 +432,18 @@ fn validate_workspace_policy_accepts_governed_workspace_shape() {
     assert_eq!(validate_workspace_policy(&policy), Ok(()));
 }
 
+#[test]
+fn workspace_priority_policy_exposes_default_and_support_checks() {
+    let policy = sample_workspace_priority_policy();
+    let default_priority = policy.default_task_priority().map(|value| value.to_string());
+    let expedite_priority = TaskPriority::new("expedite");
+    let background_priority = TaskPriority::new("background");
+
+    assert_eq!(default_priority.as_deref(), Some("normal"));
+    assert_eq!(expedite_priority.as_ref().map(|value| policy.supports(value)), Some(true));
+    assert_eq!(background_priority.as_ref().and_then(|value| policy.rank_for(value)), Some(10));
+}
+
 proptest::proptest! {
     #[test]
     fn formatted_epic_refs_round_trip(epic_id in uuid_inputs()) {
@@ -479,6 +495,39 @@ default_lease_seconds = 42
 neo4j_password = "neo4j-secret"
 neo4j_uri = "127.0.0.1:7687"
 neo4j_user = "neo4j"
+
+[server.workspace_bootstrap.auth]
+allowed_algorithms = ["ssh_ed25519"]
+challenge_ttl_seconds = 90
+signed_commands_required = true
+
+[server.workspace_bootstrap.priorities]
+default_priority = "normal"
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "background"
+rank = 10
+description = "Useful but not urgent."
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "normal"
+rank = 20
+description = "Expected day-to-day work."
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "expedite"
+rank = 30
+description = "Pull forward ahead of normal backlog."
+
+[[server.workspace_bootstrap.memberships]]
+actor_id = "operator"
+role = "admin"
+
+[[server.workspace_bootstrap.public_keys]]
+actor_id = "operator"
+algorithm = "ssh_ed25519"
+key_id = "local"
+public_key = "ssh-ed25519 AAAATEST threadplane@example"
 "#
 }
 

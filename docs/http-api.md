@@ -106,6 +106,7 @@ Examples:
 
 `POST /v1/tasks`
 - Offer a new task into a workspace. Tasks can optionally attach to an epic and declare direct dependencies at creation time.
+- The requested priority must be supported by the workspace policy. When the CLI omits `--priority`, it first reads the workspace policy and uses its configured default.
 
 Request:
 
@@ -188,7 +189,7 @@ Request:
 - List tasks with optional filters:
   - `status=open|claimed|completed`
   - `epic_id=<uuid>`
-  - `priority=low|medium|high|urgent`
+  - `priority=<workspace-priority-name>`
   - `owner=<string>`
   - `label=<normalized-label>`
   - `limit=1..200`
@@ -208,6 +209,30 @@ Request:
 
 `GET /v1/tasks/{task_id}/dag`
 - Fetch the task plus its transitive dependency and dependent chains.
+
+## Workspace Governance
+
+`GET /v1/workspaces/{workspace}/policy`
+- Fetch the durable workspace policy. If the workspace has never been touched before, the server first seeds it from `server.workspace_bootstrap`.
+
+`PUT /v1/workspaces/{workspace}/policy`
+- Replace the workspace policy. The request actor must already hold the `admin` role in that workspace.
+
+`GET /v1/workspaces/{workspace}/memberships`
+- List workspace memberships.
+
+`POST /v1/workspaces/{workspace}/memberships`
+- Grant or update a workspace membership. The request actor must already hold the `admin` role in that workspace.
+
+`GET /v1/workspaces/{workspace}/keys`
+- List registered actor public keys, optionally filtered by `actor_id`.
+
+`POST /v1/workspaces/{workspace}/keys`
+- Add or update a registered actor public key. The request actor must already hold the `admin` role in that workspace.
+
+Current status:
+- workspace policy, memberships, and public keys are durable and enforced for role-based mutation checks
+- the pubkey challenge/signature flow itself is still the next layer, so request actors are not yet cryptographically verified
 
 ## Links
 

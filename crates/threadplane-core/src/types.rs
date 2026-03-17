@@ -1,4 +1,5 @@
 use alloc::collections::BTreeSet;
+use core::str::FromStr;
 use derive_more::Display;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -149,6 +150,32 @@ pub struct CreateEpicRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateWorkspacePolicyRequest {
+    pub actor: String,
+    pub auth: WorkspaceAuthPolicy,
+    pub priorities: WorkspacePriorityPolicy,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrantWorkspaceMembershipRequest {
+    pub actor: String,
+    pub member_actor_id: String,
+    pub role: WorkspaceRole,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddWorkspacePublicKeyRequest {
+    pub actor: String,
+    pub algorithm: PublicKeyAlgorithm,
+    pub key_id: String,
+    pub member_actor_id: String,
+    pub public_key: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClaimTaskRequest {
     pub actor: String,
     pub lease_seconds: Option<i64>,
@@ -233,30 +260,48 @@ pub struct EpicRecord {
     pub workspace: String,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Default,
-    Serialize,
-    Deserialize,
-    strum::Display,
-    strum::EnumIter,
-    strum::EnumString,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum TaskPriority {
-    High,
-    Low,
-    #[default]
-    Medium,
-    Urgent,
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Display, Serialize, Deserialize)]
+#[display("{_0}")]
+#[serde(transparent)]
+pub struct TaskPriority(String);
+
+impl TaskPriority {
+    #[inline]
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn from_lossy<T>(value: T) -> Self
+    where
+        T: Into<String>,
+    {
+        Self::new(value).unwrap_or_else(|| Self("invalid".to_owned()))
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn new<T>(value: T) -> Option<Self>
+    where
+        T: Into<String>,
+    {
+        let normalized = normalize_workspace_priority_name(&value.into());
+        (!normalized.is_empty()).then_some(Self(normalized))
+    }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+impl FromStr for TaskPriority {
+    type Err = &'static str;
+
+    #[inline]
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        Self::new(input).ok_or("task priority cannot be empty")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskMetadata {
     pub labels: Vec<String>,
     pub owner: Option<String>,
@@ -332,6 +377,29 @@ pub struct WorkspacePriority {
 pub struct WorkspacePriorityPolicy {
     pub default_priority: String,
     pub priorities: Vec<WorkspacePriority>,
+}
+
+impl WorkspacePriorityPolicy {
+    #[inline]
+    #[must_use]
+    pub fn default_task_priority(&self) -> Option<TaskPriority> {
+        TaskPriority::new(self.default_priority.clone())
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn rank_for(&self, priority: &TaskPriority) -> Option<u16> {
+        self.priorities
+            .iter()
+            .find(|candidate| normalize_workspace_priority_name(&candidate.name) == priority.as_str())
+            .map(|candidate| candidate.rank)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn supports(&self, priority: &TaskPriority) -> bool {
+        self.rank_for(priority).is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

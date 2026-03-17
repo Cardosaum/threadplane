@@ -45,6 +45,13 @@ pub(crate) enum ThreadplaneServerError {
         location: Location,
     },
 
+    #[snafu(display("invalid workspace bootstrap config: {reason}"))]
+    InvalidWorkspaceBootstrap {
+        reason: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("failed to bind threadplane server to {bind_addr}"))]
     BindListener {
         bind_addr: SocketAddr,
@@ -132,6 +139,13 @@ pub(crate) enum ThreadplaneServerError {
         location: Location,
     },
 
+    #[snafu(display("forbidden: {msg}"))]
+    Forbidden {
+        msg: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("not found: {msg}"))]
     NotFound {
         msg: String,
@@ -156,6 +170,10 @@ impl ThreadplaneServerError {
         Conflict { msg: msg.into() }.build()
     }
 
+    pub(crate) fn forbidden(msg: impl Into<String>) -> Self {
+        Forbidden { msg: msg.into() }.build()
+    }
+
     pub(crate) fn not_found(msg: impl Into<String>) -> Self {
         NotFound { msg: msg.into() }.build()
     }
@@ -171,6 +189,7 @@ impl ThreadplaneServerError {
         match self {
             Self::LoadConfig { location, .. }
             | Self::InvalidBindAddress { location, .. }
+            | Self::InvalidWorkspaceBootstrap { location, .. }
             | Self::BindListener { location, .. }
             | Self::ConnectPostgres { location, .. }
             | Self::ConnectNeo4j { location, .. }
@@ -183,6 +202,7 @@ impl ThreadplaneServerError {
             | Self::GraphDecode { location, .. }
             | Self::BadRequest { location, .. }
             | Self::Conflict { location, .. }
+            | Self::Forbidden { location, .. }
             | Self::NotFound { location, .. }
             | Self::Internal { location, .. } => location,
         }
@@ -192,9 +212,11 @@ impl ThreadplaneServerError {
         match self {
             Self::BadRequest { .. } => StatusCode::BAD_REQUEST,
             Self::Conflict { .. } => StatusCode::CONFLICT,
+            Self::Forbidden { .. } => StatusCode::FORBIDDEN,
             Self::NotFound { .. } => StatusCode::NOT_FOUND,
             Self::LoadConfig { .. }
             | Self::InvalidBindAddress { .. }
+            | Self::InvalidWorkspaceBootstrap { .. }
             | Self::BindListener { .. }
             | Self::ConnectPostgres { .. }
             | Self::ConnectNeo4j { .. }
@@ -218,6 +240,7 @@ impl ThreadplaneServerError {
             Self::GraphDecode { source, .. } => source.to_string(),
             Self::LoadConfig { .. }
             | Self::InvalidBindAddress { .. }
+            | Self::InvalidWorkspaceBootstrap { .. }
             | Self::BindListener { .. }
             | Self::ConnectPostgres { .. }
             | Self::ConnectNeo4j { .. }
@@ -225,6 +248,7 @@ impl ThreadplaneServerError {
             | Self::Serve { .. } => self.to_string(),
             Self::BadRequest { msg, .. }
             | Self::Conflict { msg, .. }
+            | Self::Forbidden { msg, .. }
             | Self::NotFound { msg, .. }
             | Self::Internal { msg, .. } => msg.clone(),
         }

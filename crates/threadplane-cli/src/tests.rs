@@ -20,7 +20,7 @@ fn sample_task_metadata() -> TaskMetadata {
     TaskMetadata {
         labels: vec!["workflow".to_owned(), "agent".to_owned()],
         owner: Some("codex".to_owned()),
-        priority: TaskPriority::High,
+        priority: TaskPriority::from_lossy("high"),
     }
 }
 
@@ -297,7 +297,7 @@ fn dedup_task_ids_keeps_unique_sorted_values() {
 fn triage_has_changes_rejects_noop_requests() {
     let noop = super::command::TaskMetadataPatchArgs::default();
     let priority_change = super::command::TaskMetadataPatchArgs {
-        priority: Some(super::command::TaskPriorityValue::Urgent),
+        priority: Some("urgent".to_owned()),
         ..Default::default()
     };
 

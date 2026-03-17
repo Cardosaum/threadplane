@@ -511,6 +511,12 @@ Current commands:
 - `task show`
 - `task triage`
   - supports bulk epic assignment plus durable metadata updates
+- `workspace policy show`
+- `workspace policy set`
+- `workspace member list`
+- `workspace member grant`
+- `workspace key list`
+- `workspace key add`
 - `link add`
 - `link xanadu`
 - `events list`
@@ -537,6 +543,14 @@ Global options:
 4. XDG system config directories such as `/etc/xdg/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
 6. CLI runtime overrides such as `--server`
+
+Every server config also includes a `server.workspace_bootstrap` block. That bootstrap policy seeds new workspaces the first time they are touched:
+
+- supported task priorities and their queue rank
+- the default priority used by the CLI when `task offer` omits `--priority`
+- allowed public-key algorithms and signature policy
+- initial admin/editor memberships
+- initial actor public keys
 
 See [etc/config.toml.example](./etc/config.toml.example) for the file format.
 

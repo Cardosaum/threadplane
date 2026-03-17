@@ -70,6 +70,25 @@ pub(crate) fn patch_json<B: Serialize, T: DeserializeOwned>(
     parse_response(client, "PATCH", server, request_url, response)
 }
 
+pub(crate) fn put_json<B: Serialize, T: DeserializeOwned>(
+    client: &Client,
+    server: &str,
+    path: &str,
+    body: &B,
+    idempotency_key: Option<&str>,
+) -> Result<T> {
+    let request_url = url(server, path);
+    let mut request_builder = client.put(&request_url).json(body);
+    if let Some(command_idempotency_key) = idempotency_key {
+        request_builder = request_builder.header("Idempotency-Key", command_idempotency_key);
+    }
+    let response = request_builder.send().context(RequestSend {
+        method: "PUT",
+        url: request_url.clone(),
+    })?;
+    parse_response(client, "PUT", server, request_url, response)
+}
+
 fn parse_response<T: DeserializeOwned>(
     client: &Client,
     method: &'static str,

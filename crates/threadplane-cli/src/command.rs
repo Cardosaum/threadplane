@@ -16,19 +16,22 @@ use uuid::Uuid;
 
 use threadplane_core::{
     compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
-    AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimNextTaskRequest,
-    ClaimTaskRequest, CliConfigOverrides, CompleteTaskRequest, ConfigDiscovery,
-    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EntityRecord,
-    EventRecord, GraphRelation, NoteRecord, OfferTaskRequest, ProjectionStatus,
-    ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ActorPublicKey, ApiEnvelope,
+    BuildComparison, ClaimNextTaskRequest, ClaimTaskRequest, CliConfigOverrides,
+    CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest, CreateNoteRequest,
+    CreateXanaduLinkRequest, EntityContext, EntityRecord, EventRecord,
+    GrantWorkspaceMembershipRequest, GraphRelation, NoteRecord, OfferTaskRequest,
+    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
     TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
     ThreadplaneConfig, ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest,
+    UpdateWorkspacePolicyRequest, WorkspaceAuthPolicy, WorkspaceMembership, WorkspacePolicy,
+    WorkspacePriority, WorkspacePriorityPolicy, WorkspaceRole,
 };
 
 use crate::{
     build_info::current_build_info,
     error::{JsonRender, Result, Usage},
-    http::{get_json, patch_json, post_json},
+    http::{get_json, patch_json, post_json, put_json},
 };
 
 #[derive(Debug, Parser)]
@@ -87,6 +90,7 @@ enum Command {
     #[command(about = "Show the product and architecture summary exposed by the service")]
     Scope,
     Task(TaskCommand),
+    Workspace(WorkspaceCommand),
 }
 
 #[derive(Debug, Args)]
@@ -200,6 +204,118 @@ struct ConfigCommand {
 enum ConfigSubcommand {
     #[command(about = "Print the resolved config and where threadplane looks for it")]
     Show,
+}
+
+#[derive(Debug, Args)]
+#[command(about = "Inspect and manage workspace policy, memberships, and public keys")]
+struct WorkspaceCommand {
+    #[command(subcommand)]
+    command: WorkspaceSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum WorkspaceSubcommand {
+    #[command(about = "Add or update an actor public key for a workspace")]
+    KeyAdd(WorkspaceKeyAdd),
+    #[command(about = "List actor public keys registered for a workspace")]
+    KeyList(WorkspaceKeyList),
+    #[command(about = "Grant or update a workspace membership")]
+    MemberGrant(WorkspaceMemberGrant),
+    #[command(about = "List workspace memberships")]
+    MemberList(WorkspaceMemberList),
+    #[command(about = "Replace the workspace governance policy")]
+    PolicySet(WorkspacePolicySet),
+    #[command(about = "Show the effective workspace governance policy")]
+    PolicyShow(WorkspacePolicyShow),
+}
+
+#[derive(Debug, Args)]
+struct WorkspacePolicyShow {
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspacePolicySet {
+    #[arg(long, help = "Admin actor updating the workspace policy")]
+    actor: String,
+
+    #[arg(
+        long = "allowed-algorithm",
+        help = "Allowed public-key algorithm. Repeat for multiple algorithms.",
+        required = true
+    )]
+    allowed_algorithms: Vec<String>,
+
+    #[arg(long, help = "Challenge TTL in seconds")]
+    challenge_ttl_seconds: u32,
+
+    #[arg(long, help = "Default task priority name")]
+    default_priority: String,
+
+    #[arg(
+        long = "priority",
+        help = "Priority definition as name:rank[:description]. Repeat for multiple priorities.",
+        required = true
+    )]
+    priorities: Vec<String>,
+
+    #[arg(long, help = "Require signed commands for workspace mutations")]
+    signed_commands_required: bool,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceMemberList {
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceMemberGrant {
+    #[arg(long, help = "Admin actor granting the membership")]
+    actor: String,
+
+    #[arg(long, help = "Member actor ID")]
+    member_actor_id: String,
+
+    #[arg(long, help = "Workspace role to grant")]
+    role: String,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceKeyList {
+    #[arg(long, help = "Optional actor ID filter")]
+    actor_id: Option<String>,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct WorkspaceKeyAdd {
+    #[arg(long, help = "Admin actor registering the key")]
+    actor: String,
+
+    #[arg(long, help = "Public-key algorithm")]
+    algorithm: String,
+
+    #[arg(long, help = "Key ID")]
+    key_id: String,
+
+    #[arg(long, help = "Member actor ID")]
+    member_actor_id: String,
+
+    #[arg(long, help = "Public key material")]
+    public_key: String,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
 }
 
 #[derive(Debug, Args)]
@@ -637,15 +753,6 @@ struct NextTask {
     workspace: String,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum, strum::Display)]
-#[strum(serialize_all = "snake_case")]
-pub(crate) enum TaskPriorityValue {
-    High,
-    Low,
-    Medium,
-    Urgent,
-}
-
 #[derive(Debug, Args, Clone)]
 struct TaskMetadataArgs {
     #[arg(long, help = "Durable label. Repeat for multiple labels")]
@@ -654,12 +761,8 @@ struct TaskMetadataArgs {
     #[arg(long, help = "Durable owner, distinct from the temporary claim actor")]
     owner: Option<String>,
 
-    #[arg(
-        long,
-        default_value_t = TaskPriorityValue::Medium,
-        help = "Priority used for backlog sorting and filtering"
-    )]
-    priority: TaskPriorityValue,
+    #[arg(long, help = "Priority used for backlog sorting and filtering")]
+    priority: Option<String>,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -668,7 +771,7 @@ struct TaskMetadataFilterArgs {
     owner: Option<String>,
 
     #[arg(long, help = "Only include tasks with this priority")]
-    priority: Option<TaskPriorityValue>,
+    priority: Option<String>,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -686,7 +789,7 @@ pub(crate) struct TaskMetadataPatchArgs {
     pub(crate) owner: Option<String>,
 
     #[arg(long, help = "Replace the task priority")]
-    pub(crate) priority: Option<TaskPriorityValue>,
+    pub(crate) priority: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -799,6 +902,13 @@ struct TaskTriageSummary {
     workspace: String,
 }
 
+#[derive(Debug, Default)]
+struct TaskTriageOutcome {
+    changed: bool,
+    completed: bool,
+    updated: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum TaskDependencyViewKind {
     BlockedBy,
@@ -839,6 +949,9 @@ pub(crate) fn execute(
         Command::Scope => handle_scope(client, &server)?,
         Command::Task(task_command) => {
             handle_task(client, &server, idempotency_key, task_command)?;
+        }
+        Command::Workspace(workspace_command) => {
+            handle_workspace(client, &server, idempotency_key, workspace_command)?;
         }
     }
 
@@ -904,6 +1017,93 @@ fn handle_config(
                 }
             });
             print_value(&payload)
+        }
+    }
+}
+
+fn handle_workspace(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: WorkspaceCommand,
+) -> Result<()> {
+    match command.command {
+        WorkspaceSubcommand::PolicyShow(workspace) => {
+            let response: ApiEnvelope<WorkspacePolicy> =
+                get_json(client, server, &workspace_policy_path(&workspace.workspace))?;
+            print_value(&response)
+        }
+        WorkspaceSubcommand::PolicySet(workspace) => {
+            let request = UpdateWorkspacePolicyRequest {
+                actor: workspace.actor,
+                auth: WorkspaceAuthPolicy {
+                    allowed_algorithms: parse_public_key_algorithms(
+                        &workspace.allowed_algorithms,
+                    )?,
+                    challenge_ttl_seconds: workspace.challenge_ttl_seconds,
+                    signed_commands_required: workspace.signed_commands_required,
+                },
+                priorities: WorkspacePriorityPolicy {
+                    default_priority: normalize_priority_name(&workspace.default_priority)?,
+                    priorities: parse_workspace_priority_specs(&workspace.priorities)?,
+                },
+                workspace: workspace.workspace.clone(),
+            };
+            let response: ApiEnvelope<WorkspacePolicy> = put_json(
+                client,
+                server,
+                &workspace_policy_path(&workspace.workspace),
+                &request,
+                idempotency_key,
+            )?;
+            print_value(&response)
+        }
+        WorkspaceSubcommand::MemberList(workspace) => {
+            let response: ApiEnvelope<Vec<WorkspaceMembership>> =
+                get_json(client, server, &workspace_memberships_path(&workspace.workspace))?;
+            print_value(&response)
+        }
+        WorkspaceSubcommand::MemberGrant(workspace) => {
+            let request = GrantWorkspaceMembershipRequest {
+                actor: workspace.actor,
+                member_actor_id: workspace.member_actor_id,
+                role: parse_workspace_role(&workspace.role)?,
+                workspace: workspace.workspace.clone(),
+            };
+            let response: ApiEnvelope<WorkspaceMembership> = post_json(
+                client,
+                server,
+                &workspace_memberships_path(&workspace.workspace),
+                &request,
+                idempotency_key,
+            )?;
+            print_value(&response)
+        }
+        WorkspaceSubcommand::KeyList(workspace) => {
+            let response: ApiEnvelope<Vec<ActorPublicKey>> = get_json(
+                client,
+                server,
+                &workspace_keys_path(&workspace.workspace, workspace.actor_id.as_deref()),
+            )?;
+            print_value(&response)
+        }
+        WorkspaceSubcommand::KeyAdd(workspace) => {
+            let request = AddWorkspacePublicKeyRequest {
+                actor: workspace.actor,
+                algorithm: parse_public_key_algorithm(&workspace.algorithm)?,
+                key_id: workspace.key_id,
+                member_actor_id: workspace.member_actor_id,
+                public_key: workspace.public_key,
+                workspace: workspace.workspace.clone(),
+            };
+            let response: ApiEnvelope<ActorPublicKey> = post_json(
+                client,
+                server,
+                &workspace_keys_path(&workspace.workspace, None),
+                &request,
+                idempotency_key,
+            )?;
+            print_value(&response)
         }
     }
 }
@@ -1186,7 +1386,12 @@ fn handle_claim_next_task(
             .and_then(|value| normalize_task_labels(vec![value]).into_iter().next()),
         lease_seconds: task.lease_seconds,
         owner: normalize_task_owner(task.metadata_filters.owner),
-        priority: task.metadata_filters.priority.map(task_priority_from_cli),
+        priority: task
+            .metadata_filters
+            .priority
+            .as_deref()
+            .map(parse_task_priority_input)
+            .transpose()?,
         workspace: task.workspace,
     };
     let response: ApiEnvelope<Option<TaskClaimRecord>> =
@@ -1211,7 +1416,7 @@ fn handle_complete_task(
 }
 
 fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<()> {
-    let path = task_list_path(task);
+    let path = task_list_path(task)?;
     let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
 
     match task.format {
@@ -1224,7 +1429,7 @@ fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<
 }
 
 fn handle_next_task(client: &Client, server: &str, task: &NextTask) -> Result<()> {
-    let path = task_next_path(task);
+    let path = task_next_path(task)?;
     let response: ApiEnvelope<Option<TaskListEntry>> = get_json(client, server, &path)?;
 
     match task.format {
@@ -1245,6 +1450,7 @@ fn handle_offer_task(
     idempotency_key: Option<&str>,
     task: OfferTask,
 ) -> Result<()> {
+    let workspace_policy = fetch_workspace_policy_summary(client, server, &task.workspace)?;
     let request = OfferTaskRequest {
         workspace: task.workspace,
         author: task.author,
@@ -1252,7 +1458,7 @@ fn handle_offer_task(
         title: task.title,
         details: task.details,
         epic_id: task.epic_id,
-        metadata: task_metadata_from_args(task.metadata),
+        metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
     };
     let response: serde_json::Value =
         post_json(client, server, "/v1/tasks", &request, idempotency_key)?;
@@ -1299,6 +1505,7 @@ fn handle_update_task(
     idempotency_key: Option<&str>,
     task: UpdateTask,
 ) -> Result<()> {
+    let workspace_policy = fetch_workspace_policy_summary(client, server, &task.workspace)?;
     let request = UpdateTaskRequest {
         workspace: task.workspace,
         actor: task.actor,
@@ -1306,7 +1513,7 @@ fn handle_update_task(
         title: task.title,
         details: task.details,
         epic_id: task.epic_id,
-        metadata: task_metadata_from_args(task.metadata),
+        metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
     };
     let path = task_path(task.task_id);
     let response: serde_json::Value = patch_json(client, server, &path, &request, idempotency_key)?;
@@ -1611,32 +1818,32 @@ fn short_uuid(value: &Uuid) -> String {
         .to_owned()
 }
 
-fn task_list_path(task: &ListTasks) -> String {
+fn task_list_path(task: &ListTasks) -> Result<String> {
     let suffix = task_query_suffix(
         task.status.map(TaskStatusValue::as_str),
         task.epic_id,
         task.limit,
         task.label.as_deref(),
         task.metadata_filters.owner.as_deref(),
-        task.metadata_filters.priority,
+        task.metadata_filters.priority.as_deref(),
         task.ready_only,
-    );
+    )?;
 
-    format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
+    Ok(format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix))
 }
 
-fn task_next_path(task: &NextTask) -> String {
+fn task_next_path(task: &NextTask) -> Result<String> {
     let suffix = task_query_suffix(
         Some("open"),
         task.epic_id,
         None,
         task.label.as_deref(),
         task.metadata_filters.owner.as_deref(),
-        task.metadata_filters.priority,
+        task.metadata_filters.priority.as_deref(),
         true,
-    );
+    )?;
 
-    format!("/v1/workspaces/{}/tasks/next{}", task.workspace, suffix)
+    Ok(format!("/v1/workspaces/{}/tasks/next{}", task.workspace, suffix))
 }
 
 fn note_path(note_id: Uuid) -> String {
@@ -1677,9 +1884,9 @@ fn task_query_suffix(
     limit: Option<i64>,
     label: Option<&str>,
     owner: Option<&str>,
-    priority: Option<TaskPriorityValue>,
+    priority: Option<&str>,
     ready_only: bool,
-) -> String {
+) -> Result<String> {
     let mut query = Vec::new();
     if let Some(status_filter) = status {
         query.push(format!("status={status_filter}"));
@@ -1700,16 +1907,16 @@ fn task_query_suffix(
         query.push(format!("owner={selected_owner}"));
     }
     if let Some(selected_priority) = priority {
-        query.push(format!("priority={}", task_priority_from_cli(selected_priority)));
+        query.push(format!("priority={}", parse_task_priority_input(selected_priority)?));
     }
     if ready_only {
         query.push("ready_only=true".to_owned());
     }
 
     if query.is_empty() {
-        String::new()
+        Ok(String::new())
     } else {
-        format!("?{}", query.join("&"))
+        Ok(format!("?{}", query.join("&")))
     }
 }
 
@@ -1760,6 +1967,111 @@ pub(crate) fn events_tail_path(workspace: &str, limit: i64, after_event_id: Opti
     format!("/v1/workspaces/{workspace}/events/tail?{}", params.join("&"))
 }
 
+fn workspace_policy_path(workspace: &str) -> String {
+    format!("/v1/workspaces/{workspace}/policy")
+}
+
+fn workspace_memberships_path(workspace: &str) -> String {
+    format!("/v1/workspaces/{workspace}/memberships")
+}
+
+fn workspace_keys_path(workspace: &str, actor_id: Option<&str>) -> String {
+    if let Some(selected_actor_id) = normalize_task_owner(actor_id.map(str::to_owned)) {
+        return format!("/v1/workspaces/{workspace}/keys?actor_id={selected_actor_id}");
+    }
+
+    format!("/v1/workspaces/{workspace}/keys")
+}
+
+fn fetch_workspace_policy_summary(
+    client: &Client,
+    server: &str,
+    workspace: &str,
+) -> Result<WorkspacePolicy> {
+    let response: ApiEnvelope<WorkspacePolicy> =
+        get_json(client, server, &workspace_policy_path(workspace))?;
+    Ok(response.data)
+}
+
+fn parse_task_priority_input(input: &str) -> Result<TaskPriority> {
+    TaskPriority::new(input).ok_or_else(|| {
+        Usage {
+            message: "priority cannot be empty".to_owned(),
+        }
+        .build()
+    })
+}
+
+fn normalize_priority_name(input: &str) -> Result<String> {
+    Ok(parse_task_priority_input(input)?.to_string())
+}
+
+fn parse_public_key_algorithm(input: &str) -> Result<threadplane_core::PublicKeyAlgorithm> {
+    input.parse().map_err(|_error| {
+        Usage {
+            message: format!("unsupported public-key algorithm `{input}`"),
+        }
+        .build()
+    })
+}
+
+fn parse_public_key_algorithms(
+    inputs: &[String],
+) -> Result<Vec<threadplane_core::PublicKeyAlgorithm>> {
+    inputs
+        .iter()
+        .map(String::as_str)
+        .map(parse_public_key_algorithm)
+        .collect()
+}
+
+fn parse_workspace_priority_specs(inputs: &[String]) -> Result<Vec<WorkspacePriority>> {
+    inputs
+        .iter()
+        .map(String::as_str)
+        .map(parse_workspace_priority_spec)
+        .collect()
+}
+
+fn parse_workspace_role(input: &str) -> Result<WorkspaceRole> {
+    input.parse().map_err(|_error| {
+        Usage {
+            message: format!("unsupported workspace role `{input}`"),
+        }
+        .build()
+    })
+}
+
+fn parse_workspace_priority_spec(input: &str) -> Result<WorkspacePriority> {
+    let mut parts = input.splitn(3, ':');
+    let raw_name = parts.next().unwrap_or_default();
+    let raw_rank = parts.next().ok_or_else(|| {
+        Usage {
+            message: format!(
+                "priority definition `{input}` must look like name:rank[:description]"
+            ),
+        }
+        .build()
+    })?;
+    let description = parts
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let rank = raw_rank.parse::<u16>().map_err(|_error| {
+        Usage {
+            message: format!("priority rank `{raw_rank}` must be an unsigned integer"),
+        }
+        .build()
+    })?;
+
+    Ok(WorkspacePriority {
+        description,
+        name: normalize_priority_name(raw_name)?,
+        rank,
+    })
+}
+
 fn select_dependency_view_from_context(
     context: &TaskContext,
     kind: TaskDependencyViewKind,
@@ -1802,77 +2114,24 @@ fn triage_tasks(
 
     for task_id in &task_ids {
         let task_record = fetch_task_summary(client, server, *task_id)?;
-        let mut changed = false;
-        let next_metadata = apply_metadata_patch(&task_record.metadata, &task.metadata);
+        let next_metadata = apply_metadata_patch(&task_record.metadata, &task.metadata)?;
+        let outcome = triage_task_record(
+            client,
+            server,
+            idempotency_key,
+            task,
+            *task_id,
+            &task_record,
+            &next_metadata,
+        )?;
 
-        if let Some(epic_id) = task.epic_id {
-            if task_record.epic_id != Some(epic_id) {
-                let request = UpdateTaskRequest {
-                    workspace: task.workspace.clone(),
-                    actor: task.actor.clone(),
-                    task_id: *task_id,
-                    title: task_record.title.clone(),
-                    details: task_record.details.clone(),
-                    epic_id: Some(epic_id),
-                    metadata: next_metadata.clone(),
-                };
-                let request_key = idempotency_key
-                    .map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
-                let _: serde_json::Value = patch_json(
-                    client,
-                    server,
-                    &task_path(*task_id),
-                    &request,
-                    request_key.as_deref(),
-                )?;
-                updated_task_ids.push(*task_id);
-                changed = true;
-            }
-        }
-
-        if !changed && task_metadata_changed(&task_record.metadata, &next_metadata) {
-            let request = UpdateTaskRequest {
-                workspace: task.workspace.clone(),
-                actor: task.actor.clone(),
-                task_id: *task_id,
-                title: task_record.title.clone(),
-                details: task_record.details.clone(),
-                epic_id: task_record.epic_id,
-                metadata: next_metadata,
-            };
-            let request_key = idempotency_key
-                .map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
-            let _: serde_json::Value = patch_json(
-                client,
-                server,
-                &task_path(*task_id),
-                &request,
-                request_key.as_deref(),
-            )?;
+        if outcome.updated {
             updated_task_ids.push(*task_id);
-            changed = true;
         }
-
-        if task.complete && task_record.status != "completed" {
-            let request = CompleteTaskRequest {
-                workspace: task.workspace.clone(),
-                actor: task.actor.clone(),
-                task_id: *task_id,
-            };
-            let request_key = idempotency_key
-                .map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
-            let _: serde_json::Value = post_json(
-                client,
-                server,
-                &task_completion_path(*task_id),
-                &request,
-                request_key.as_deref(),
-            )?;
+        if outcome.completed {
             completed_task_ids.push(*task_id);
-            changed = true;
         }
-
-        if !changed {
+        if !outcome.changed {
             unchanged_task_ids.push(*task_id);
         }
     }
@@ -1884,12 +2143,98 @@ fn triage_tasks(
         epic_id: task.epic_id,
         labels: triage_summary_labels(&task.metadata),
         owner: triage_summary_owner(&task.metadata),
-        priority: task.metadata.priority.map(task_priority_from_cli),
+        priority: task
+            .metadata
+            .priority
+            .as_deref()
+            .map(parse_task_priority_input)
+            .transpose()?,
         task_ids,
         unchanged_task_ids,
         updated_task_ids,
         workspace: task.workspace.clone(),
     })
+}
+
+fn triage_task_record(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: &TriageTasks,
+    task_id: Uuid,
+    task_record: &TaskRecord,
+    next_metadata: &TaskMetadata,
+) -> Result<TaskTriageOutcome> {
+    let mut outcome = TaskTriageOutcome::default();
+
+    if let Some(epic_id) = task.epic_id {
+        if task_record.epic_id != Some(epic_id) {
+            let request = UpdateTaskRequest {
+                workspace: task.workspace.clone(),
+                actor: task.actor.clone(),
+                task_id,
+                title: task_record.title.clone(),
+                details: task_record.details.clone(),
+                epic_id: Some(epic_id),
+                metadata: next_metadata.clone(),
+            };
+            let request_key =
+                idempotency_key.map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
+            let _: serde_json::Value = patch_json(
+                client,
+                server,
+                &task_path(task_id),
+                &request,
+                request_key.as_deref(),
+            )?;
+            outcome.changed = true;
+            outcome.updated = true;
+        }
+    }
+
+    if !outcome.changed && task_metadata_changed(&task_record.metadata, next_metadata) {
+        let request = UpdateTaskRequest {
+            workspace: task.workspace.clone(),
+            actor: task.actor.clone(),
+            task_id,
+            title: task_record.title.clone(),
+            details: task_record.details.clone(),
+            epic_id: task_record.epic_id,
+            metadata: next_metadata.clone(),
+        };
+        let request_key =
+            idempotency_key.map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
+        let _: serde_json::Value = patch_json(
+            client,
+            server,
+            &task_path(task_id),
+            &request,
+            request_key.as_deref(),
+        )?;
+        outcome.changed = true;
+        outcome.updated = true;
+    }
+
+    if task.complete && task_record.status != "completed" {
+        let request = CompleteTaskRequest {
+            workspace: task.workspace.clone(),
+            actor: task.actor.clone(),
+            task_id,
+        };
+        let request_key =
+            idempotency_key.map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
+        let _: serde_json::Value = post_json(
+            client,
+            server,
+            &task_completion_path(task_id),
+            &request,
+            request_key.as_deref(),
+        )?;
+        outcome.changed = true;
+        outcome.completed = true;
+    }
+
+    Ok(outcome)
 }
 
 pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
@@ -1901,15 +2246,29 @@ pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
         .collect()
 }
 
-fn task_metadata_from_args(metadata: TaskMetadataArgs) -> TaskMetadata {
-    TaskMetadata {
+fn task_metadata_from_args(
+    metadata: TaskMetadataArgs,
+    workspace_policy: &WorkspacePolicy,
+) -> Result<TaskMetadata> {
+    let priority = metadata
+        .priority
+        .as_deref()
+        .map(parse_task_priority_input)
+        .transpose()?
+        .or_else(|| workspace_policy.priorities.default_task_priority())
+        .ok_or_else(|| Usage {
+            message: "workspace policy does not define a usable default priority".to_owned(),
+        }
+        .build())?;
+
+    Ok(TaskMetadata {
         labels: normalize_task_labels(metadata.label),
         owner: normalize_task_owner(metadata.owner),
-        priority: task_priority_from_cli(metadata.priority),
-    }
+        priority,
+    })
 }
 
-fn apply_metadata_patch(current: &TaskMetadata, patch: &TaskMetadataPatchArgs) -> TaskMetadata {
+fn apply_metadata_patch(current: &TaskMetadata, patch: &TaskMetadataPatchArgs) -> Result<TaskMetadata> {
     let labels = if patch.clear_labels {
         Vec::new()
     } else if patch.label.is_empty() {
@@ -1925,11 +2284,16 @@ fn apply_metadata_patch(current: &TaskMetadata, patch: &TaskMetadataPatchArgs) -
         current.owner.clone()
     };
 
-    TaskMetadata {
+    Ok(TaskMetadata {
         labels,
         owner,
-        priority: patch.priority.map_or(current.priority, task_priority_from_cli),
-    }
+        priority: patch
+            .priority
+            .as_deref()
+            .map(parse_task_priority_input)
+            .transpose()?
+            .unwrap_or_else(|| current.priority.clone()),
+    })
 }
 
 fn task_metadata_changed(current: &TaskMetadata, next: &TaskMetadata) -> bool {
@@ -1959,13 +2323,4 @@ pub(crate) fn triage_has_changes(
         || metadata.owner.is_some()
         || metadata.clear_labels
         || !metadata.label.is_empty()
-}
-
-const fn task_priority_from_cli(priority: TaskPriorityValue) -> TaskPriority {
-    match priority {
-        TaskPriorityValue::Low => TaskPriority::Low,
-        TaskPriorityValue::Medium => TaskPriority::Medium,
-        TaskPriorityValue::High => TaskPriority::High,
-        TaskPriorityValue::Urgent => TaskPriority::Urgent,
-    }
 }

@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 use xdg::BaseDirectories;
 
+use crate::types::{PublicKeyAlgorithm, WorkspaceAuthPolicy, WorkspacePriorityPolicy, WorkspaceRole};
+
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const DEPENDS_ON_RELATION: &str = "depends_on";
 pub const IMPLEMENTS_EPIC_RELATION: &str = "implements_epic";
@@ -56,6 +58,28 @@ pub struct CliConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceBootstrapMembershipConfig {
+    pub actor_id: String,
+    pub role: WorkspaceRole,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceBootstrapPublicKeyConfig {
+    pub actor_id: String,
+    pub algorithm: PublicKeyAlgorithm,
+    pub key_id: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceBootstrapConfig {
+    pub auth: WorkspaceAuthPolicy,
+    pub memberships: Vec<WorkspaceBootstrapMembershipConfig>,
+    pub priorities: WorkspacePriorityPolicy,
+    pub public_keys: Vec<WorkspaceBootstrapPublicKeyConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub bind: String,
     pub database_url: String,
@@ -63,6 +87,7 @@ pub struct ServerConfig {
     pub neo4j_password: String,
     pub neo4j_uri: String,
     pub neo4j_user: String,
+    pub workspace_bootstrap: WorkspaceBootstrapConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

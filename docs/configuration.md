@@ -46,6 +46,40 @@ default_lease_seconds = 300
 neo4j_password = "password"
 neo4j_uri = "127.0.0.1:7687"
 neo4j_user = "neo4j"
+
+[server.workspace_bootstrap.auth]
+allowed_algorithms = ["ssh_ed25519"]
+challenge_ttl_seconds = 90
+signed_commands_required = true
+
+[server.workspace_bootstrap.priorities]
+default_priority = "medium"
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "low"
+rank = 10
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "medium"
+rank = 20
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "high"
+rank = 30
+
+[[server.workspace_bootstrap.priorities.priorities]]
+name = "urgent"
+rank = 40
+
+[[server.workspace_bootstrap.memberships]]
+actor_id = "operator"
+role = "admin"
+
+[[server.workspace_bootstrap.public_keys]]
+actor_id = "operator"
+algorithm = "ssh_ed25519"
+key_id = "local"
+public_key = "ssh-ed25519 AAAATEST threadplane@example"
 ```
 
 See [../etc/config.toml.example](../etc/config.toml.example) for the committed example shape.
@@ -95,6 +129,15 @@ cargo run -p threadplane-cli -- scope
 
 `server.default_lease_seconds`
 - Default lease duration applied when task claims omit `--lease-seconds`.
+
+`server.workspace_bootstrap`
+- Seeds new workspaces with a durable policy, role memberships, and trusted public keys the first time the workspace is touched.
+
+`server.workspace_bootstrap.priorities`
+- Defines the supported task priority vocabulary and rank order for ready queues in every newly bootstrapped workspace.
+
+`server.workspace_bootstrap.memberships`
+- Defines the initial admin and editor actors that can mutate workspace state before membership is managed through the API.
 
 ## Troubleshooting
 
