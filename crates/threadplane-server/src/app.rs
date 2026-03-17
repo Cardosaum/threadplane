@@ -31,10 +31,11 @@ use crate::error::{
 use crate::{
     error::ServerResult,
     handlers::{
-        add_link, add_task_dependency, add_xanadu_link, claim_task, complete_task, create_epic,
-        create_note, healthz, list_epics, list_events, list_open_tasks, list_tasks, offer_task,
-        projection_status, release_task, root, scope, show_epic, show_note, show_task,
-        task_context, task_dag, update_note, update_task,
+        add_link, add_task_dependency, add_xanadu_link, claim_next_task, claim_task,
+        complete_task, create_epic, create_note, healthz, list_epics, list_events, list_notes,
+        list_open_tasks, list_tasks, next_task, offer_task, projection_status, release_task,
+        root, scope, show_epic, show_note, show_task, tail_events, task_context, task_dag,
+        update_note, update_task,
     },
     lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
     migration::run_migrations,
@@ -308,6 +309,7 @@ fn projection_routes() -> Router<AppState> {
 fn task_routes() -> Router<AppState> {
     Router::new()
         .route("/claim", post(claim_task))
+        .route("/claim-next", post(claim_next_task))
         .route("/complete", post(complete_task))
         .route("/dependencies", post(add_task_dependency))
         .route("/offers", post(offer_task))
@@ -322,12 +324,15 @@ fn workspace_routes() -> Router<AppState> {
     Router::new()
         .route("/epics", get(list_epics))
         .route("/events", get(list_events))
+        .route("/events/tail", get(tail_events))
+        .route("/notes", get(list_notes))
         .nest("/tasks", workspace_task_routes())
 }
 
 fn workspace_task_routes() -> Router<AppState> {
     Router::new()
         .route("/", get(list_tasks))
+        .route("/next", get(next_task))
         .route("/open", get(list_open_tasks))
 }
 

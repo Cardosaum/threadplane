@@ -179,6 +179,20 @@ cargo run -p threadplane-cli -- task list \
 
 Ready queues come back ordered by priority first and then recency, so the first compact rows are the best next picks for people and agents.
 
+Pick or claim the best next task directly:
+
+```bash
+cargo run -p threadplane-cli -- task next \
+  --workspace shared-lab \
+  --format compact
+
+cargo run -p threadplane-cli -- task claim-next \
+  --workspace shared-lab \
+  --actor agent-b \
+  --priority urgent \
+  --lease-seconds 120
+```
+
 Bulk-triage multiple backlog items at once:
 
 ```bash
@@ -202,6 +216,19 @@ cargo run -p threadplane-cli -- note add \
   --author agent-a \
   --title "Lease design note" \
   --body "Claims should expire and return tasks to the pool."
+```
+
+List or search notes without remembering UUIDs:
+
+```bash
+cargo run -p threadplane-cli -- note list \
+  --workspace shared-lab \
+  --format compact
+
+cargo run -p threadplane-cli -- note search \
+  --workspace shared-lab \
+  --query "lease" \
+  --format compact
 ```
 
 Create a Xanadu link between them:
@@ -231,6 +258,15 @@ Inspect the task with graph-backed context:
 cargo run -p threadplane-cli -- task context --task-id <task-id>
 ```
 
+Consume event history incrementally:
+
+```bash
+cargo run -p threadplane-cli -- events tail \
+  --workspace shared-lab \
+  --limit 25 \
+  --format compact
+```
+
 ## CLI Surface
 
 Current commands:
@@ -243,27 +279,36 @@ Current commands:
 - `epic list`
 - `epic show`
 - `note add`
+- `note list`
+- `note search`
 - `note show`
 - `note update`
 - `task blocked-by`
 - `task blocks`
 - `task complete`
-- `task offer`
-- `task depend`
+- `task claim`
+- `task claim-next`
+- `task context`
 - `task dag`
+- `task depend`
 - `task list`
   - supports `--limit`, `--format compact`, `--priority`, `--owner`, and `--label`
+- `task next`
+- `task offer`
 - `task update`
-- `task claim`
 - `task release`
 - `task show`
 - `task triage`
   - supports bulk epic assignment plus durable metadata updates
-- `task context`
 - `link add`
 - `link xanadu`
 - `events list`
+- `events tail`
 - `config show`
+
+Roadmap:
+
+- [CLI Usability Roadmap](./docs/roadmap-cli-usability.md)
 
 Global options:
 

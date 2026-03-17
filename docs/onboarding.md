@@ -112,6 +112,13 @@ cargo run -p threadplane-cli -- task list \
 
 When `--ready-only` is set, threadplane sorts the queue by priority first and then recency, which makes the compact view a practical next-work picker for people and agents.
 
+If you want the CLI to choose for you, use:
+
+```bash
+cargo run -p threadplane-cli -- task next --workspace shared-lab --format compact
+cargo run -p threadplane-cli -- task claim-next --workspace shared-lab --actor agent-b --lease-seconds 120
+```
+
 Create a note:
 
 ```bash
@@ -121,6 +128,13 @@ cargo run -p threadplane-cli -- note add \
   --author agent-a \
   --title "Lease design note" \
   --body "Claims should expire and return tasks to the pool."
+```
+
+Later, rediscover it with:
+
+```bash
+cargo run -p threadplane-cli -- note list --workspace shared-lab --format compact
+cargo run -p threadplane-cli -- note search --workspace shared-lab --query "lease" --format compact
 ```
 
 Create a Xanadu link:
@@ -137,6 +151,12 @@ Inspect graph-backed context:
 
 ```bash
 cargo run -p threadplane-cli -- task context --task-id <task-id>
+```
+
+Tail new workspace events:
+
+```bash
+cargo run -p threadplane-cli -- events tail --workspace shared-lab --format compact
 ```
 
 Claim the task:

@@ -60,6 +60,12 @@ Request:
 `GET /v1/notes/{note_id}`
 - Fetch a note by ID.
 
+`GET /v1/workspaces/{workspace}/notes`
+- List notes for a workspace with optional filters:
+  - `author=<string>`
+  - `query=<search-text>`
+  - `limit=1..200`
+
 ## Epics
 
 `POST /v1/epics`
@@ -136,6 +142,9 @@ Request:
 }
 ```
 
+`POST /v1/tasks/claim-next`
+- Claim the best next ready `open` task in the workspace, with optional epic/owner/priority/label filters.
+
 `POST /v1/tasks/release`
 - Release an active claim and move the task back to `open`.
 
@@ -165,6 +174,9 @@ Request:
   - `label=<normalized-label>`
   - `limit=1..200`
   - `ready_only=true|false`
+
+`GET /v1/workspaces/{workspace}/tasks/next`
+- Return the single best next ready `open` task for the workspace with the same queue filters as task listing.
 
 `GET /v1/workspaces/{workspace}/tasks/open`
 - Convenience view for open tasks.
@@ -213,6 +225,9 @@ Request:
 
 `GET /v1/workspaces/{workspace}/events?limit=25`
 - Fetch recent events for a workspace.
+
+`GET /v1/workspaces/{workspace}/events/tail?limit=25&after_event_id=<uuid>`
+- Fetch workspace events in ascending order after a known event boundary. When `after_event_id` is omitted, the newest `limit` events are returned in ascending order.
 
 ## Response Shape
 

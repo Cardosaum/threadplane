@@ -9,6 +9,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
+use core::future::Future;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::error;
@@ -33,20 +34,22 @@ use crate::{
         append_event, append_task_dependency, build_task_list_entries, fetch_active_claim,
         fetch_active_claim_tx, fetch_dependency_chain, fetch_dependent_chain,
         fetch_direct_dependencies, fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx,
-        fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_rows_for_workspace,
-        fetch_note_by_id, fetch_note_by_id_tx, fetch_projection_status, fetch_task_by_id,
-        fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group,
+        fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
+        fetch_event_rows_after_workspace_cursor, fetch_event_rows_for_workspace, fetch_note_by_id,
+        fetch_note_by_id_tx, fetch_notes_for_listing, fetch_projection_status, fetch_task_by_id,
+        fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group, record_projection_cursor,
         sync_transclusion_members, task_is_ready, unique_task_ids, update_transclusion_group,
-        TaskListFilters, TaskRow,
+        NoteListFilters, TaskListFilters, TaskRow,
     },
 };
 use threadplane_core::{
     health_summary, normalize_task_labels, normalize_task_owner, scope_summary, service_snapshot,
-    AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimTaskRequest, CompleteTaskRequest,
-    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EpicRecord, EventKind,
-    EventRecord, LinkRecord, NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
-    ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskListEntry, TaskPriority,
-    TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
+    AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimNextTaskRequest,
+    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
+    CreateXanaduLinkRequest, EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord,
+    OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord,
+    TaskContext, TaskDag, TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest,
+    UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -55,6 +58,19 @@ const MAX_LIST_LIMIT: i64 = 200;
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct EventTailQuery {
+    after_event_id: Option<Uuid>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NoteListQuery {
+    author: Option<String>,
+    limit: Option<i64>,
+    query: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +194,32 @@ async fn persist_task_update(
     Ok(None)
 }
 
+async fn advance_graph_projection_cursor(
+    state: &AppState,
+    workspace: &str,
+    event_id: Uuid,
+) -> ServerResult<()> {
+    let event = fetch_event_row_for_workspace(state.pool(), workspace, event_id).await?;
+    let mut tx = state.pool().begin().await?;
+    record_projection_cursor(&mut tx, GRAPH_PROJECTION_NAME, event.cursor(), Utc::now()).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn project_graph_event<Output, Operation>(
+    state: &AppState,
+    workspace: &str,
+    event_id: Uuid,
+    operation: Operation,
+) -> ServerResult<Output>
+where
+    Operation: Future<Output = ServerResult<Output>>,
+{
+    let output = state.serialize_graph_projection(operation).await?;
+    advance_graph_projection_cursor(state, workspace, event_id).await?;
+    Ok(output)
+}
+
 async fn ensure_task_is_unclaimed(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     task_id: Uuid,
@@ -192,6 +234,92 @@ async fn ensure_task_is_unclaimed(
     }
 
     Ok(())
+}
+
+async fn persist_task_claim(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace: &str,
+    actor: &str,
+    task_id: Uuid,
+    lease_seconds: i64,
+    claimed_at: DateTime<Utc>,
+    payload: &Value,
+) -> ServerResult<(TaskClaimRecord, TaskRow)> {
+    fetch_task_by_id_tx(tx, task_id, workspace).await?;
+    ensure_task_is_unclaimed(tx, task_id).await?;
+    let expires_at = calculate_claim_expiry(claimed_at, lease_seconds)
+        .ok_or_else(|| ThreadplaneServerError::bad_request("lease expiration overflow"))?;
+    let event_id = append_event(
+        tx,
+        workspace,
+        actor,
+        EventKind::TaskClaimed,
+        payload,
+        claimed_at,
+    )
+    .await?;
+
+    let claim_id = Uuid::new_v4();
+    sqlx::query(
+        "
+        INSERT INTO task_claims (claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ",
+    )
+    .bind(claim_id)
+    .bind(task_id)
+    .bind(workspace)
+    .bind(actor)
+    .bind(event_id)
+    .bind(claimed_at)
+    .bind(expires_at)
+    .execute(&mut **tx)
+    .await?;
+
+    sqlx::query(
+        "
+        UPDATE tasks
+        SET status = 'claimed',
+            updated_at = $2
+        WHERE task_id = $1
+        ",
+    )
+    .bind(task_id)
+    .bind(claimed_at)
+    .execute(&mut **tx)
+    .await?;
+
+    let task = fetch_task_by_id_tx(tx, task_id, workspace).await?;
+    let record = TaskClaimRecord {
+        actor: actor.to_owned(),
+        claim_id,
+        claimed_at: claimed_at.to_rfc3339(),
+        event_id,
+        expires_at: expires_at.to_rfc3339(),
+        task_id,
+        workspace: workspace.to_owned(),
+    };
+
+    Ok((record, task))
+}
+
+fn task_selection_filters(query: &TaskListQuery) -> TaskListFilters<'_> {
+    TaskListFilters {
+        epic_id: query.epic_id,
+        label: query.label.as_deref(),
+        owner: query.owner.as_deref(),
+        priority: query.priority,
+        ready_only: query.ready_only.unwrap_or(false),
+        status: query.status.as_deref(),
+    }
+}
+
+fn task_next_filters(query: &TaskListQuery) -> TaskListFilters<'_> {
+    TaskListFilters {
+        ready_only: true,
+        status: Some("open"),
+        ..task_selection_filters(query)
+    }
 }
 
 async fn project_task_record(state: &AppState, record: &TaskRecord) -> ServerResult<()> {
@@ -215,6 +343,14 @@ async fn project_claimed_task_record(
             error!(?error, task_id = %claim.task_id, "failed to project claim");
             ThreadplaneServerError::internal(error)
         })
+}
+
+async fn build_task_list_entry(
+    state: &AppState,
+    task: TaskRow,
+) -> ServerResult<Option<TaskListEntry>> {
+    let mut entries = build_task_list_entries(state.pool(), vec![task]).await?;
+    Ok(entries.pop())
 }
 
 fn build_xanadu_request_payload(request: &CreateXanaduLinkRequest) -> Value {
@@ -336,13 +472,12 @@ pub(crate) async fn create_epic(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
             project_epic(state.graph(), &record)
                 .await
                 .map_err(ThreadplaneServerError::internal)
-        })
-        .await?;
+        }))
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -422,14 +557,13 @@ pub(crate) async fn create_note(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
             project_note(state.graph(), &record).await.map_err(|error| {
                 error!(?error, note_id = %record.note_id, "failed to project note");
                 ThreadplaneServerError::internal(error)
             })
-        })
-        .await?;
+        }))
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -440,6 +574,26 @@ pub(crate) async fn show_note(
 ) -> AppResult<NoteRecord> {
     let row = fetch_note_by_id(state.pool(), note_id).await?;
     Ok(success(NoteRecord::from(row)))
+}
+
+pub(crate) async fn list_notes(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<NoteListQuery>,
+) -> AppResult<Vec<NoteRecord>> {
+    let limit = normalized_list_limit(query.limit);
+    let rows = fetch_notes_for_listing(
+        state.pool(),
+        &workspace,
+        NoteListFilters {
+            author: query.author.as_deref(),
+            query: query.query.as_deref(),
+        },
+        limit,
+    )
+    .await?;
+    let data = rows.into_iter().map(NoteRecord::from).collect();
+    Ok(success(data))
 }
 
 pub(crate) async fn update_note(
@@ -470,7 +624,7 @@ pub(crate) async fn update_note(
         }
     };
     let note = fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?;
-    append_event(
+    let event_id = append_event(
         &mut tx,
         &request.workspace,
         &request.actor,
@@ -517,8 +671,7 @@ pub(crate) async fn update_note(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(&state, group_id, None)
                     .await
@@ -528,8 +681,8 @@ pub(crate) async fn update_note(
                     .await
                     .map_err(ThreadplaneServerError::internal)
             }
-        })
-        .await?;
+        }))
+    .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -626,9 +779,13 @@ pub(crate) async fn offer_task(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    state
-        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
-        .await?;
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(project_task_record(&state, &record)),
+    )
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -666,7 +823,7 @@ pub(crate) async fn update_task(
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
     }
-    append_event(
+    let event_id = append_event(
         &mut tx,
         &request.workspace,
         &request.actor,
@@ -684,8 +841,7 @@ pub(crate) async fn update_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    state
-        .serialize_graph_projection(Box::pin(async {
+    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(&state, group_id, None)
                     .await
@@ -695,7 +851,7 @@ pub(crate) async fn update_task(
 
             project_task_record(&state, &record).await
         }))
-        .await?;
+    .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -729,74 +885,27 @@ pub(crate) async fn claim_task(
         }
     };
 
-    fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
-
-    ensure_task_is_unclaimed(&mut tx, request.task_id).await?;
-    let expires_at = calculate_claim_expiry(claimed_at, lease_seconds)
-        .ok_or_else(|| ThreadplaneServerError::bad_request("lease expiration overflow"))?;
-    let event_id = append_event(
+    let (record, task) = persist_task_claim(
         &mut tx,
         &request.workspace,
         &request.actor,
-        EventKind::TaskClaimed,
-        &payload,
+        request.task_id,
+        lease_seconds,
         claimed_at,
+        &payload,
     )
     .await?;
-
-    let claim_id = Uuid::new_v4();
-    sqlx::query(
-        "
-        INSERT INTO task_claims (claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ",
-    )
-    .bind(claim_id)
-    .bind(request.task_id)
-    .bind(&request.workspace)
-    .bind(&request.actor)
-    .bind(event_id)
-    .bind(claimed_at)
-    .bind(expires_at)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "
-        UPDATE tasks
-        SET status = 'claimed',
-            updated_at = $2
-        WHERE task_id = $1
-        ",
-    )
-    .bind(request.task_id)
-    .bind(claimed_at)
-    .execute(&mut *tx)
-    .await?;
-    let workspace = request.workspace.clone();
-    let actor = request.actor.clone();
-    let record = TaskClaimRecord {
-        claim_id,
-        task_id: request.task_id,
-        workspace,
-        actor,
-        event_id,
-        claimed_at: claimed_at.to_rfc3339(),
-        expires_at: expires_at.to_rfc3339(),
-    };
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, claimed_at).await?;
-    let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
-    state
-        .serialize_graph_projection(Box::pin(project_claimed_task_record(
-            &state,
-            &task,
-            &task_record,
-            &record,
-        )))
-        .await?;
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(project_claimed_task_record(&state, &task, &task_record, &record)),
+    )
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -841,7 +950,7 @@ pub(crate) async fn release_task(
             claim.actor
         )));
     }
-    append_event(
+    let event_id = append_event(
         &mut tx,
         &request.workspace,
         &request.actor,
@@ -881,9 +990,13 @@ pub(crate) async fn release_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, released_at)
             .await?;
     tx.commit().await?;
-    state
-        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
-        .await?;
+    project_graph_event(
+        &state,
+        &request.workspace,
+        event_id,
+        Box::pin(project_task_record(&state, &record)),
+    )
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -924,7 +1037,7 @@ pub(crate) async fn complete_task(
             )));
         }
     }
-    append_event(
+    let event_id = append_event(
         &mut tx,
         &request.workspace,
         &request.actor,
@@ -966,9 +1079,13 @@ pub(crate) async fn complete_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, completed_at)
             .await?;
     tx.commit().await?;
-    state
-        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
-        .await?;
+    project_graph_event(
+        &state,
+        &request.workspace,
+        event_id,
+        Box::pin(project_task_record(&state, &record)),
+    )
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1000,7 +1117,7 @@ pub(crate) async fn add_task_dependency(
             return Ok(Json(envelope));
         }
     };
-    append_task_dependency(
+    let event_id = append_task_dependency(
         &mut tx,
         &request.workspace,
         &request.actor,
@@ -1018,8 +1135,7 @@ pub(crate) async fn add_task_dependency(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &data, created_at).await?;
     tx.commit().await?;
 
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
             project_task_dependency_by_id(
                 state.graph(),
                 state.pool(),
@@ -1028,8 +1144,8 @@ pub(crate) async fn add_task_dependency(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        })
-        .await?;
+        }))
+    .await?;
 
     Ok(success_with_receipt(data, receipt))
 }
@@ -1115,14 +1231,13 @@ pub(crate) async fn add_link(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
             project_link(state.graph(), &record).await.map_err(|error| {
                 error!(?error, link_id = %record.link_id, "failed to project link");
                 ThreadplaneServerError::internal(error)
             })
-        })
-        .await?;
+        }))
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1215,8 +1330,7 @@ pub(crate) async fn add_xanadu_link(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    state
-        .serialize_graph_projection(async {
+    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
             reproject_transclusion_group(
                 &state,
                 xanadu_group.canonical_group_id,
@@ -1224,8 +1338,8 @@ pub(crate) async fn add_xanadu_link(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        })
-        .await?;
+        }))
+    .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1237,6 +1351,24 @@ pub(crate) async fn list_events(
 ) -> AppResult<Vec<EventRecord>> {
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_event_rows_for_workspace(state.pool(), &workspace, limit).await?;
+    let data = rows.into_iter().map(EventRecord::from).collect();
+    Ok(success(data))
+}
+
+pub(crate) async fn tail_events(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<EventTailQuery>,
+) -> AppResult<Vec<EventRecord>> {
+    let limit = normalized_list_limit(query.limit);
+    let cursor = if let Some(event_id) = query.after_event_id {
+        let event = fetch_event_row_for_workspace(state.pool(), &workspace, event_id).await?;
+        Some(event.cursor())
+    } else {
+        None
+    };
+    let rows = fetch_event_rows_after_workspace_cursor(state.pool(), &workspace, cursor, limit)
+        .await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
     Ok(success(data))
 }
@@ -1259,18 +1391,29 @@ pub(crate) async fn list_tasks(
     let rows = fetch_tasks_for_listing(
         state.pool(),
         &workspace,
-        TaskListFilters {
-            epic_id: query.epic_id,
-            label: query.label.as_deref(),
-            owner: query.owner.as_deref(),
-            priority: query.priority,
-            ready_only: query.ready_only.unwrap_or(false),
-            status: query.status.as_deref(),
-        },
+        task_selection_filters(&query),
         Some(limit),
     )
     .await?;
     let data = build_task_list_entries(state.pool(), rows).await?;
+    Ok(success(data))
+}
+
+pub(crate) async fn next_task(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<TaskListQuery>,
+) -> AppResult<Option<TaskListEntry>> {
+    let row = fetch_tasks_for_listing(state.pool(), &workspace, task_next_filters(&query), Some(1))
+        .await?
+        .into_iter()
+        .next();
+    let data = if let Some(task) = row {
+        build_task_list_entry(&state, task).await?
+    } else {
+        None
+    };
+
     Ok(success(data))
 }
 
@@ -1291,6 +1434,88 @@ pub(crate) async fn list_open_tasks(
     .await?;
     let data = build_task_list_entries(state.pool(), rows).await?;
     Ok(success(data))
+}
+
+pub(crate) async fn claim_next_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<ClaimNextTaskRequest>,
+) -> AppResult<Option<TaskClaimRecord>> {
+    let lease_seconds =
+        normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
+    let filters = TaskListFilters {
+        epic_id: request.epic_id,
+        label: request.label.as_deref(),
+        owner: request.owner.as_deref(),
+        priority: request.priority,
+        ready_only: true,
+        status: Some("open"),
+    };
+    let candidates = fetch_tasks_for_listing(state.pool(), &request.workspace, filters, Some(25))
+        .await?;
+
+    for candidate in candidates {
+        let mut tx = state.pool().begin().await?;
+        let claimed_at = Utc::now();
+        let payload = serde_json::to_value(&request)?;
+        let pending_receipt = match begin_idempotent_command::<Option<TaskClaimRecord>>(
+            &mut tx,
+            IdempotencyContext {
+                actor: &request.actor,
+                command_kind: "claim_next_task",
+                idempotency_key: idempotency_key(&headers)?,
+                request_payload: &payload,
+                workspace: &request.workspace,
+            },
+            claimed_at,
+        )
+        .await?
+        {
+            CommandExecution::Execute(pending_receipt) => pending_receipt,
+            CommandExecution::Replay(envelope) => {
+                tx.commit().await?;
+                return Ok(Json(envelope));
+            }
+        };
+
+        match persist_task_claim(
+            &mut tx,
+            &request.workspace,
+            &request.actor,
+            candidate.task_id,
+            lease_seconds,
+            claimed_at,
+            &payload,
+        )
+        .await
+        {
+            Ok((record, task)) => {
+                let receipt = complete_idempotent_command(
+                    &mut tx,
+                    pending_receipt.as_ref(),
+                    &Some(record.clone()),
+                    claimed_at,
+                )
+                .await?;
+                tx.commit().await?;
+                let task_record = TaskRecord::from(task.clone());
+                project_graph_event(
+                    &state,
+                    &record.workspace,
+                    record.event_id,
+                    Box::pin(project_claimed_task_record(&state, &task, &task_record, &record)),
+                )
+                .await?;
+                return Ok(success_with_receipt(Some(record), receipt));
+            }
+            Err(ThreadplaneServerError::Conflict { .. }) => {
+                tx.rollback().await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(success(None))
 }
 
 pub(crate) async fn show_task(

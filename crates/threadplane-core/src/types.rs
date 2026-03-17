@@ -156,6 +156,17 @@ pub struct ClaimTaskRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimNextTaskRequest {
+    pub actor: String,
+    pub epic_id: Option<Uuid>,
+    pub label: Option<String>,
+    pub lease_seconds: Option<i64>,
+    pub owner: Option<String>,
+    pub priority: Option<TaskPriority>,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseTaskRequest {
     pub actor: String,
     pub task_id: Uuid,

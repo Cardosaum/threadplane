@@ -4,7 +4,8 @@
 )]
 
 use alloc::collections::BTreeSet;
-use std::path::PathBuf;
+use core::time::Duration;
+use std::{path::PathBuf, thread};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use reqwest::blocking::Client;
@@ -15,12 +16,13 @@ use uuid::Uuid;
 
 use threadplane_core::{
     compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
-    AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimTaskRequest,
-    CliConfigOverrides, CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest,
-    CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest, ProjectionStatus,
-    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary,
-    TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, ThreadplaneConfig,
-    ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
+    AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimNextTaskRequest,
+    ClaimTaskRequest, CliConfigOverrides, CompleteTaskRequest, ConfigDiscovery,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EventRecord,
+    NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot,
+    TaskClaimRecord, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata,
+    TaskPriority, TaskRecord, ThreadplaneConfig, ThreadplaneConfigOverrides,
+    UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
 };
 
 use crate::{
@@ -169,16 +171,54 @@ struct EventsCommand {
 enum EventsSubcommand {
     #[command(about = "List recent events for a workspace")]
     List(ListEvents),
+    #[command(about = "Read workspace events incrementally and optionally follow for new changes")]
+    Tail(TailEvents),
 }
 
 #[derive(Debug, Args)]
 struct ListEvents {
     #[arg(
         long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(
+        long,
         default_value_t = 25,
         help = "Maximum number of events to return"
     )]
     limit: i64,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct TailEvents {
+    #[arg(long, help = "Resume after this event UUID")]
+    after_event_id: Option<Uuid>,
+
+    #[arg(long, help = "Keep polling for new events")]
+    follow: bool,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(
+        long,
+        default_value_t = 25,
+        help = "Maximum number of events to return per poll"
+    )]
+    limit: i64,
+
+    #[arg(long, default_value_t = 2, help = "Seconds to wait between follow polls")]
+    poll_seconds: u64,
 
     #[arg(long, help = "Workspace name")]
     workspace: String,
@@ -256,6 +296,10 @@ enum ProjectionSubcommand {
 enum NoteSubcommand {
     #[command(about = "Create a new note in a workspace")]
     Add(AddNote),
+    #[command(about = "List notes in a workspace")]
+    List(ListNotes),
+    #[command(about = "Search notes by title/body text")]
+    Search(SearchNotes),
     #[command(about = "Fetch a note by ID")]
     Show(ShowNote),
     #[command(about = "Update a note and propagate through Xanadu links when present")]
@@ -272,6 +316,47 @@ struct AddNote {
 
     #[arg(long, help = "Note title")]
     title: String,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct ListNotes {
+    #[arg(long, help = "Only include notes from this author")]
+    author: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(long, help = "Maximum number of notes to return")]
+    limit: Option<i64>,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct SearchNotes {
+    #[arg(long, help = "Only include notes from this author")]
+    author: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(long, help = "Maximum number of notes to return")]
+    limit: Option<i64>,
+
+    #[arg(long, help = "Search query matched against note title and body")]
+    query: String,
 
     #[arg(long, help = "Workspace name")]
     workspace: String,
@@ -316,6 +401,8 @@ enum TaskSubcommand {
     Blocks(TaskDependencyViewCommand),
     #[command(about = "Claim an open task with a lease")]
     Claim(ClaimTask),
+    #[command(about = "Claim the next best ready task in the workspace")]
+    ClaimNext(ClaimNextTask),
     #[command(about = "Mark a task complete and release any active claim")]
     Complete(CompleteTask),
     #[command(about = "Fetch a task plus graph-backed related context")]
@@ -326,6 +413,8 @@ enum TaskSubcommand {
     Depend(AddTaskDependency),
     #[command(about = "List tasks with workflow filters")]
     List(ListTasks),
+    #[command(about = "Show the next best ready task in the workspace")]
+    Next(NextTask),
     #[command(about = "Offer a new task into a workspace")]
     Offer(OfferTask),
     #[command(about = "Release an active claim and return the task to the pool")]
@@ -354,6 +443,27 @@ struct ClaimTask {
 }
 
 #[derive(Debug, Args)]
+struct ClaimNextTask {
+    #[arg(long, help = "Actor claiming the task")]
+    actor: String,
+
+    #[arg(long, help = "Optional epic filter")]
+    epic_id: Option<Uuid>,
+
+    #[arg(long, help = "Durable label filter")]
+    label: Option<String>,
+
+    #[arg(long, help = "Lease duration in seconds")]
+    lease_seconds: Option<i64>,
+
+    #[command(flatten)]
+    metadata_filters: TaskMetadataFilterArgs,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
 struct TaskDependencyViewCommand {
     #[arg(long, help = "Only return direct relationships instead of the transitive chain")]
     direct_only: bool,
@@ -363,7 +473,7 @@ struct TaskDependencyViewCommand {
         default_value = "compact",
         help = "Render JSON or a compact human-readable summary"
     )]
-    format: TaskListOutput,
+    format: OutputFormat,
 
     #[arg(long, help = "Task UUID")]
     task_id: Uuid,
@@ -435,7 +545,7 @@ struct ListTasks {
         default_value = "json",
         help = "Render JSON or a compact human-readable summary"
     )]
-    format: TaskListOutput,
+    format: OutputFormat,
 
     #[arg(long, help = "Only include tasks with the selected normalized label")]
     label: Option<String>,
@@ -457,10 +567,32 @@ struct ListTasks {
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-enum TaskListOutput {
+enum OutputFormat {
     Compact,
     #[default]
     Json,
+}
+
+#[derive(Debug, Args)]
+struct NextTask {
+    #[arg(long, help = "Optional epic filter")]
+    epic_id: Option<Uuid>,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(long, help = "Durable label filter")]
+    label: Option<String>,
+
+    #[command(flatten)]
+    metadata_filters: TaskMetadataFilterArgs,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, strum::Display)]
@@ -736,13 +868,17 @@ fn handle_config(
 fn handle_events(client: &Client, server: &str, command: EventsCommand) -> Result<()> {
     match command.command {
         EventsSubcommand::List(events) => {
-            let path = format!(
-                "/v1/workspaces/{}/events?limit={}",
-                events.workspace, events.limit
-            );
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
+            let path = events_list_path(events.workspace.as_str(), events.limit);
+            let response: ApiEnvelope<Vec<EventRecord>> = get_json(client, server, &path)?;
+            match events.format {
+                OutputFormat::Compact => {
+                    print!("{}", render_event_list_compact(&response.data));
+                    Ok(())
+                }
+                OutputFormat::Json => print_value(&response),
+            }
         }
+        EventsSubcommand::Tail(events) => handle_tail_events(client, server, &events),
     }
 }
 
@@ -809,6 +945,8 @@ fn handle_note(
                 post_json(client, server, "/v1/notes", &request, idempotency_key)?;
             print_value(&response)
         }
+        NoteSubcommand::List(list) => handle_list_notes(client, server, &list),
+        NoteSubcommand::Search(search) => handle_search_notes(client, server, &search),
         NoteSubcommand::Show(show) => {
             let path = format!("/v1/notes/{}", show.note_id);
             let response: serde_json::Value = get_json(client, server, &path)?;
@@ -826,6 +964,42 @@ fn handle_note(
                 post_json(client, server, "/v1/notes/update", &request, idempotency_key)?;
             print_value(&response)
         }
+    }
+}
+
+fn handle_list_notes(client: &Client, server: &str, note: &ListNotes) -> Result<()> {
+    let path = note_list_path(
+        note.workspace.as_str(),
+        note.limit,
+        note.author.as_deref(),
+        None,
+    );
+    let response: ApiEnvelope<Vec<NoteRecord>> = get_json(client, server, &path)?;
+
+    match note.format {
+        OutputFormat::Compact => {
+            print!("{}", render_note_list_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
+    }
+}
+
+fn handle_search_notes(client: &Client, server: &str, note: &SearchNotes) -> Result<()> {
+    let path = note_list_path(
+        note.workspace.as_str(),
+        note.limit,
+        note.author.as_deref(),
+        Some(note.query.as_str()),
+    );
+    let response: ApiEnvelope<Vec<NoteRecord>> = get_json(client, server, &path)?;
+
+    match note.format {
+        OutputFormat::Compact => {
+            print!("{}", render_note_list_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
     }
 }
 
@@ -855,6 +1029,9 @@ fn handle_task(
         TaskSubcommand::Blocks(task) => {
             handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::Blocks)
         }
+        TaskSubcommand::ClaimNext(task) => {
+            handle_claim_next_task(client, server, idempotency_key, task)
+        }
         TaskSubcommand::Claim(task) => handle_claim_task(client, server, idempotency_key, task),
         TaskSubcommand::Complete(task) => {
             handle_complete_task(client, server, idempotency_key, task)
@@ -865,6 +1042,7 @@ fn handle_task(
             handle_add_task_dependency(client, server, idempotency_key, task)
         }
         TaskSubcommand::List(task) => handle_list_tasks(client, server, &task),
+        TaskSubcommand::Next(task) => handle_next_task(client, server, &task),
         TaskSubcommand::Offer(task) => handle_offer_task(client, server, idempotency_key, task),
         TaskSubcommand::Release(task) => {
             handle_release_task(client, server, idempotency_key, task)
@@ -917,6 +1095,28 @@ fn handle_claim_task(
     print_value(&response)
 }
 
+fn handle_claim_next_task(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    task: ClaimNextTask,
+) -> Result<()> {
+    let request = ClaimNextTaskRequest {
+        actor: task.actor,
+        epic_id: task.epic_id,
+        label: task
+            .label
+            .and_then(|value| normalize_task_labels(vec![value]).into_iter().next()),
+        lease_seconds: task.lease_seconds,
+        owner: normalize_task_owner(task.metadata_filters.owner),
+        priority: task.metadata_filters.priority.map(task_priority_from_cli),
+        workspace: task.workspace,
+    };
+    let response: ApiEnvelope<Option<TaskClaimRecord>> =
+        post_json(client, server, "/v1/tasks/claim-next", &request, idempotency_key)?;
+    print_value(&response)
+}
+
 fn handle_complete_task(
     client: &Client,
     server: &str,
@@ -938,11 +1138,27 @@ fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<
     let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
 
     match task.format {
-        TaskListOutput::Compact => {
+        OutputFormat::Compact => {
             print!("{}", render_task_list_compact(&response.data));
             Ok(())
         }
-        TaskListOutput::Json => print_value(&response),
+        OutputFormat::Json => print_value(&response),
+    }
+}
+
+fn handle_next_task(client: &Client, server: &str, task: &NextTask) -> Result<()> {
+    let path = task_next_path(task);
+    let response: ApiEnvelope<Option<TaskListEntry>> = get_json(client, server, &path)?;
+
+    match task.format {
+        OutputFormat::Compact => {
+            let rendered = response
+                .data
+                .map_or_else(|| "no tasks\n".to_owned(), |entry| render_task_list_compact(&[entry]));
+            print!("{rendered}");
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
     }
 }
 
@@ -1024,6 +1240,35 @@ fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<Ta
     let path = format!("/v1/tasks/{task_id}/context");
     let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
     Ok(response.data)
+}
+
+fn handle_tail_events(client: &Client, server: &str, events: &TailEvents) -> Result<()> {
+    let mut cursor = events.after_event_id;
+
+    loop {
+        let path = events_tail_path(events.workspace.as_str(), events.limit, cursor);
+        let response: ApiEnvelope<Vec<EventRecord>> = get_json(client, server, &path)?;
+        let latest_event_id = response.data.last().map(|event| event.event_id);
+
+        match events.format {
+            OutputFormat::Compact => {
+                if !response.data.is_empty() {
+                    print!("{}", render_event_list_compact(&response.data));
+                }
+                if response.data.is_empty() && !events.follow {
+                    print!("no events\n");
+                }
+            }
+            OutputFormat::Json => print_value(&response)?,
+        }
+
+        cursor = latest_event_id.or(cursor);
+        if !events.follow {
+            return Ok(());
+        }
+
+        thread::sleep(Duration::from_secs(events.poll_seconds));
+    }
 }
 
 fn fetch_task_dag(client: &Client, server: &str, task_id: Uuid) -> Result<TaskDag> {
@@ -1112,11 +1357,11 @@ fn handle_task_dependency_view(
     };
 
     match task.format {
-        TaskListOutput::Compact => {
+        OutputFormat::Compact => {
             print!("{}", render_task_dependency_compact(&data));
             Ok(())
         }
-        TaskListOutput::Json => print_value(&data),
+        OutputFormat::Json => print_value(&data),
     }
 }
 
@@ -1169,8 +1414,54 @@ pub(crate) fn render_task_dependency_compact(entries: &[TaskDependencySummary]) 
     format!("{}\n", lines.join("\n"))
 }
 
+pub(crate) fn render_note_list_compact(entries: &[NoteRecord]) -> String {
+    if entries.is_empty() {
+        return "no notes\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} | {} | author={} | updated_at={}",
+                short_uuid(&entry.note_id),
+                entry.title,
+                entry.author,
+                entry.updated_at
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
+pub(crate) fn render_event_list_compact(entries: &[EventRecord]) -> String {
+    if entries.is_empty() {
+        return "no events\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} | {} | actor={} | at={}",
+                short_uuid(&entry.event_id),
+                entry.kind,
+                entry.actor,
+                entry.created_at
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
 fn short_task_id(task_id: &Uuid) -> String {
-    task_id
+    short_uuid(task_id)
+}
+
+fn short_uuid(value: &Uuid) -> String {
+    value
         .to_string()
         .split('-')
         .next()
@@ -1179,39 +1470,112 @@ fn short_task_id(task_id: &Uuid) -> String {
 }
 
 fn task_list_path(task: &ListTasks) -> String {
+    let suffix = task_query_suffix(
+        task.status.map(TaskStatusValue::as_str),
+        task.epic_id,
+        task.limit,
+        task.label.as_deref(),
+        task.metadata_filters.owner.as_deref(),
+        task.metadata_filters.priority,
+        task.ready_only,
+    );
+
+    format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
+}
+
+fn task_next_path(task: &NextTask) -> String {
+    let suffix = task_query_suffix(
+        Some("open"),
+        task.epic_id,
+        None,
+        task.label.as_deref(),
+        task.metadata_filters.owner.as_deref(),
+        task.metadata_filters.priority,
+        true,
+    );
+
+    format!("/v1/workspaces/{}/tasks/next{}", task.workspace, suffix)
+}
+
+fn task_query_suffix(
+    status: Option<&str>,
+    epic_id: Option<Uuid>,
+    limit: Option<i64>,
+    label: Option<&str>,
+    owner: Option<&str>,
+    priority: Option<TaskPriorityValue>,
+    ready_only: bool,
+) -> String {
     let mut query = Vec::new();
-    if let Some(status) = task.status {
-        query.push(format!("status={}", status.as_str()));
+    if let Some(status_filter) = status {
+        query.push(format!("status={status_filter}"));
     }
-    if let Some(epic_id) = task.epic_id {
-        query.push(format!("epic_id={epic_id}"));
+    if let Some(selected_epic_id) = epic_id {
+        query.push(format!("epic_id={selected_epic_id}"));
     }
-    if let Some(limit) = task.limit {
-        query.push(format!("limit={limit}"));
+    if let Some(query_limit) = limit {
+        query.push(format!("limit={query_limit}"));
     }
-    if let Some(label) = normalize_task_labels(task.label.clone().into_iter().collect())
+    if let Some(selected_label) = normalize_task_labels(label.map(str::to_owned).into_iter().collect())
         .into_iter()
         .next()
     {
-        query.push(format!("label={label}"));
+        query.push(format!("label={selected_label}"));
     }
-    if let Some(owner) = normalize_task_owner(task.metadata_filters.owner.clone()) {
-        query.push(format!("owner={owner}"));
+    if let Some(selected_owner) = normalize_task_owner(owner.map(str::to_owned)) {
+        query.push(format!("owner={selected_owner}"));
     }
-    if let Some(priority) = task.metadata_filters.priority {
-        query.push(format!("priority={}", task_priority_from_cli(priority)));
+    if let Some(selected_priority) = priority {
+        query.push(format!("priority={}", task_priority_from_cli(selected_priority)));
     }
-    if task.ready_only {
+    if ready_only {
         query.push("ready_only=true".to_owned());
     }
 
-    let suffix = if query.is_empty() {
+    if query.is_empty() {
         String::new()
     } else {
         format!("?{}", query.join("&"))
+    }
+}
+
+pub(crate) fn note_list_path(
+    workspace: &str,
+    limit: Option<i64>,
+    author: Option<&str>,
+    query: Option<&str>,
+) -> String {
+    let mut params = Vec::new();
+    if let Some(query_limit) = limit {
+        params.push(format!("limit={query_limit}"));
+    }
+    if let Some(selected_author) = normalize_task_owner(author.map(str::to_owned)) {
+        params.push(format!("author={selected_author}"));
+    }
+    if let Some(search_query) = query.map(str::trim).filter(|value| !value.is_empty()) {
+        params.push(format!("query={search_query}"));
+    }
+
+    let suffix = if params.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", params.join("&"))
     };
 
-    format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
+    format!("/v1/workspaces/{workspace}/notes{suffix}")
+}
+
+pub(crate) fn events_list_path(workspace: &str, limit: i64) -> String {
+    format!("/v1/workspaces/{workspace}/events?limit={limit}")
+}
+
+pub(crate) fn events_tail_path(workspace: &str, limit: i64, after_event_id: Option<Uuid>) -> String {
+    let mut params = vec![format!("limit={limit}")];
+    if let Some(event_id) = after_event_id {
+        params.push(format!("after_event_id={event_id}"));
+    }
+
+    format!("/v1/workspaces/{workspace}/events/tail?{}", params.join("&"))
 }
 
 fn select_dependency_view_from_context(

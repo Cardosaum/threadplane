@@ -252,6 +252,22 @@ compact_ready_queue="$(
 [[ "$compact_ready_queue" == *"labels=agent,workflow"* ]]
 [[ "$compact_ready_queue" != *"Archive stale benchmark notes"* ]]
 
+next_task_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task next \
+        --workspace "$WORKSPACE"
+)"
+[[ "$(jq -r '.data.task.task_id' <<<"$next_task_json")" == "$task_id" ]]
+
+next_task_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        task next \
+        --workspace "$WORKSPACE" \
+        --format compact
+)"
+[[ "$next_task_compact" == *"Investigate tuple leases"* ]]
+[[ "$next_task_compact" == *"priority=high"* ]]
+
 idempotent_note_json="$(
     cargo run -q -p threadplane-cli -- \
         --idempotency-key "note-seed-${WORKSPACE}" \
@@ -283,6 +299,7 @@ note_json="$(
         --title "Lease design note" \
         --body "Claims should expire and return tasks to the pool."
 )"
+note_id="$(jq -r '.data.note_id' <<<"$note_json")"
 note_ref="$(jq -r '.data.entity_ref' <<<"$note_json")"
 
 link_json="$(
@@ -301,7 +318,7 @@ note_update_json="$(
         note update \
         --workspace "$WORKSPACE" \
         --actor agent-a \
-        --note-id "$(jq -r '.data.note_id' <<<"$note_json")" \
+        --note-id "$note_id" \
         --title "Lease semantics updated" \
         --body "A xanadu link should keep linked task text synchronized."
 )"
@@ -335,11 +352,35 @@ task_update_json="$(
 note_after_task_update_json="$(
     cargo run -q -p threadplane-cli -- \
         note show \
-        --note-id "$(jq -r '.data.note_id' <<<"$note_json")"
+        --note-id "$note_id"
 )"
 [[ "$(jq -r '.data.title' <<<"$note_after_task_update_json")" == "Canonical lease wording" ]]
 [[ "$(jq -r '.data.body' <<<"$note_after_task_update_json")" == "Updates from the task side should also rewrite the linked note." ]]
 [[ "$(jq -r '.data.transclusion_id' <<<"$note_after_task_update_json")" == "$transclusion_id" ]]
+
+note_list_json="$(
+    cargo run -q -p threadplane-cli -- \
+        note list \
+        --workspace "$WORKSPACE"
+)"
+[[ "$(jq -r --arg note_id "$note_id" '[.data[] | select(.note_id == $note_id)] | length' <<<"$note_list_json")" == "1" ]]
+
+note_search_json="$(
+    cargo run -q -p threadplane-cli -- \
+        note search \
+        --workspace "$WORKSPACE" \
+        --query "Canonical"
+)"
+[[ "$(jq -r '.data[0].title' <<<"$note_search_json")" == "Canonical lease wording" ]]
+
+note_search_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        note search \
+        --workspace "$WORKSPACE" \
+        --query "lease" \
+        --format compact
+)"
+[[ "$note_search_compact" == *"Canonical lease wording"* ]]
 
 updated_task_show_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -408,15 +449,15 @@ context_before_claim_json="$(
 [[ "$(jq -r '.data.epic.epic_id' <<<"$context_before_claim_json")" == "$epic_id" ]]
 [[ "$(jq -r '.data.dependencies[0].task_id' <<<"$context_before_claim_json")" == "$dependency_task_id" ]]
 
-claim_json="$(
+claim_next_json="$(
     cargo run -q -p threadplane-cli -- \
-        task claim \
+        task claim-next \
         --workspace "$WORKSPACE" \
         --actor agent-b \
-        --task-id "$task_id" \
+        --priority urgent \
         --lease-seconds 120
 )"
-[[ "$(jq -r '.data.actor' <<<"$claim_json")" == "agent-b" ]]
+[[ "$(jq -r '.data.task_id' <<<"$claim_next_json")" == "$task_id" ]]
 
 claimed_tasks_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -465,6 +506,29 @@ context_json="$(
 [[ "$(jq -r '.data.task.title' <<<"$context_json")" == "Canonical lease wording" ]]
 [[ "$(jq -r '.data.task.status' <<<"$context_json")" == "completed" ]]
 
+tail_events_json="$(
+    cargo run -q -p threadplane-cli -- \
+        events tail \
+        --workspace "$WORKSPACE" \
+        --after-event-id "$(jq -r '.data.event_id' <<<"$claim_next_json")" \
+        --limit 5
+)"
+[[ "$(jq -r '.data[0].kind' <<<"$tail_events_json")" == "task_released" ]]
+[[ "$(jq -r '.data[1].kind' <<<"$tail_events_json")" == "task_claimed" ]]
+[[ "$(jq -r '.data[2].kind' <<<"$tail_events_json")" == "task_completed" ]]
+
+tail_events_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        events tail \
+        --workspace "$WORKSPACE" \
+        --after-event-id "$(jq -r '.data.event_id' <<<"$claim_next_json")" \
+        --limit 5 \
+        --format compact
+)"
+[[ "$tail_events_compact" == *"task_released"* ]]
+[[ "$tail_events_compact" == *"task_claimed"* ]]
+[[ "$tail_events_compact" == *"task_completed"* ]]
+
 events_json="$(
     cargo run -q -p threadplane-cli -- \
         events list \
@@ -509,6 +573,6 @@ echo "$note_json"
 echo "$link_json"
 echo "$note_update_json"
 echo "$task_update_json"
-echo "$claim_json"
+echo "$claim_next_json"
 echo "$released_task_json"
 echo "$completed_task_json"

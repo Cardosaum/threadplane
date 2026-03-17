@@ -4,13 +4,15 @@ use snafu::IntoError as _;
 use uuid::Uuid;
 
 use crate::command::{
-    build_mismatch_warning, dedup_task_ids, render_task_dependency_compact,
+    build_mismatch_warning, dedup_task_ids, events_list_path, events_tail_path, note_list_path,
+    render_event_list_compact, render_note_list_compact, render_task_dependency_compact,
     render_task_list_compact, triage_has_changes,
 };
 use crate::error::{ContractMismatchDetails, JsonContractMismatch};
 use threadplane_core::{
-    build_info, compare_build_info, EpicRecord, TaskClaimRecord, TaskDependencySummary,
-    TaskListEntry, TaskMetadata, TaskPriority, TaskSummary,
+    build_info, compare_build_info, EpicRecord, EventKind, EventRecord, NoteRecord,
+    TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority,
+    TaskSummary,
 };
 
 fn sample_task_metadata() -> TaskMetadata {
@@ -156,6 +158,69 @@ fn render_task_dependency_compact_formats_entries() {
 #[test]
 fn render_task_dependency_compact_handles_empty_lists() {
     assert_eq!(render_task_dependency_compact(&[]), "no tasks\n");
+}
+
+#[test]
+fn render_note_list_compact_formats_entries() {
+    let rendered = render_note_list_compact(&[NoteRecord {
+        author: "codex".to_owned(),
+        body: "Lease notes".to_owned(),
+        created_at: "2026-03-17T04:00:00Z".to_owned(),
+        entity_ref: "note:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+        event_id: Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+        note_id: Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap_or_default(),
+        title: "Lease design".to_owned(),
+        transclusion_id: None,
+        updated_at: "2026-03-17T04:05:00Z".to_owned(),
+        workspace: "threadplane-dev".to_owned(),
+    }]);
+
+    assert!(rendered.contains("11111111 | Lease design | author=codex"));
+    assert!(rendered.contains("updated_at=2026-03-17T04:05:00Z"));
+}
+
+#[test]
+fn render_event_list_compact_formats_entries() {
+    let rendered = render_event_list_compact(&[EventRecord {
+        actor: "codex".to_owned(),
+        created_at: "2026-03-17T04:05:00Z".to_owned(),
+        event_id: Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+        kind: EventKind::TaskOffered,
+        payload: serde_json::json!({"task_id": "11111111-2222-3333-4444-555555555555"}),
+        workspace: "threadplane-dev".to_owned(),
+    }]);
+
+    assert!(rendered.contains("aaaaaaaa | task_offered | actor=codex"));
+    assert!(rendered.contains("at=2026-03-17T04:05:00Z"));
+}
+
+#[test]
+fn note_list_path_applies_optional_filters() {
+    let path = note_list_path(
+        "threadplane-dev",
+        Some(10),
+        Some(" codex "),
+        Some("lease"),
+    );
+
+    assert_eq!(
+        path,
+        "/v1/workspaces/threadplane-dev/notes?limit=10&author=codex&query=lease"
+    );
+}
+
+#[test]
+fn events_paths_match_workspace_reads() {
+    let event_id = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default();
+
+    assert_eq!(
+        events_list_path("threadplane-dev", 15),
+        "/v1/workspaces/threadplane-dev/events?limit=15"
+    );
+    assert_eq!(
+        events_tail_path("threadplane-dev", 15, Some(event_id)),
+        format!("/v1/workspaces/threadplane-dev/events/tail?limit=15&after_event_id={event_id}")
+    );
 }
 
 #[test]

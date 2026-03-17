@@ -170,6 +170,72 @@ pub(crate) async fn fetch_event_rows_for_workspace(
     .map_err(Into::into)
 }
 
+pub(crate) async fn fetch_event_row_for_workspace(
+    pool: &PgPool,
+    workspace: &str,
+    event_id: Uuid,
+) -> ServerResult<EventRow> {
+    query_as(
+        "
+        SELECT event_id, workspace, actor, kind, payload, created_at
+        FROM events
+        WHERE workspace = $1
+          AND event_id = $2
+        ",
+    )
+    .bind(workspace)
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| ThreadplaneServerError::not_found("event not found"))
+}
+
+pub(crate) async fn fetch_event_rows_after_workspace_cursor(
+    pool: &PgPool,
+    workspace: &str,
+    cursor: Option<ProjectionCursor>,
+    limit: i64,
+) -> ServerResult<Vec<EventRow>> {
+    if let Some(current_cursor) = cursor {
+        return query_as(
+            "
+            SELECT event_id, workspace, actor, kind, payload, created_at
+            FROM events
+            WHERE workspace = $1
+              AND (
+                    created_at > $2
+                 OR (created_at = $2 AND event_id > $3)
+              )
+            ORDER BY created_at ASC, event_id ASC
+            LIMIT $4
+            ",
+        )
+        .bind(workspace)
+        .bind(current_cursor.created_at)
+        .bind(current_cursor.event_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into);
+    }
+
+    let mut rows: Vec<EventRow> = query_as(
+        "
+        SELECT event_id, workspace, actor, kind, payload, created_at
+        FROM events
+        WHERE workspace = $1
+        ORDER BY created_at DESC, event_id DESC
+        LIMIT $2
+        ",
+    )
+    .bind(workspace)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.reverse();
+    Ok(rows)
+}
+
 pub(crate) async fn fetch_event_rows_after_cursor(
     pool: &PgPool,
     cursor: Option<ProjectionCursor>,
@@ -383,8 +449,45 @@ pub(crate) async fn fetch_note_by_id(pool: &PgPool, note_id: Uuid) -> ServerResu
     query_as(&format!("{NOTE_SELECT} WHERE note_id = $1"))
         .bind(note_id)
         .fetch_optional(pool)
-        .await?
-        .ok_or_else(|| ThreadplaneServerError::not_found("note not found"))
+    .await?
+    .ok_or_else(|| ThreadplaneServerError::not_found("note not found"))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NoteListFilters<'filter> {
+    pub(crate) author: Option<&'filter str>,
+    pub(crate) query: Option<&'filter str>,
+}
+
+pub(crate) async fn fetch_notes_for_listing(
+    pool: &PgPool,
+    workspace: &str,
+    filters: NoteListFilters<'_>,
+    limit: i64,
+) -> ServerResult<Vec<NoteRow>> {
+    let normalized_author = normalize_task_owner(filters.author.map(str::to_owned));
+    let normalized_query = normalized_note_query(filters.query);
+    let mut query = QueryBuilder::<Postgres>::new(NOTE_SELECT);
+    query.push(" WHERE workspace = ");
+    query.push_bind(workspace);
+
+    if let Some(author) = normalized_author {
+        query.push(" AND author = ");
+        query.push_bind(author);
+    }
+    if let Some(search_query) = normalized_query {
+        query.push(" AND (title ILIKE ");
+        query.push_bind(format!("%{search_query}%"));
+        query.push(" OR body ILIKE ");
+        query.push_bind(format!("%{search_query}%"));
+        query.push(")");
+    }
+
+    query.push(" ORDER BY updated_at DESC, created_at DESC");
+    query.push(" LIMIT ");
+    query.push_bind(limit);
+
+    query.build_query_as::<NoteRow>().fetch_all(pool).await.map_err(Into::into)
 }
 
 pub(crate) async fn fetch_note_by_event_id(
@@ -419,6 +522,13 @@ pub(crate) async fn fetch_task_by_id(pool: &PgPool, task_id: Uuid) -> ServerResu
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ThreadplaneServerError::not_found("task not found"))
+}
+
+fn normalized_note_query(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+        .map(str::to_owned)
 }
 
 pub(crate) async fn fetch_task_by_event_id(
@@ -535,7 +645,7 @@ pub(crate) async fn append_task_dependency(
     task_id: Uuid,
     depends_on_task_id: Uuid,
     created_at: DateTime<Utc>,
-) -> ServerResult<()> {
+) -> ServerResult<Uuid> {
     if task_id == depends_on_task_id {
         return Err(ThreadplaneServerError::bad_request(
             "a task cannot depend on itself",
@@ -620,7 +730,7 @@ pub(crate) async fn append_task_dependency(
     .execute(&mut **tx)
     .await?;
 
-    Ok(())
+    Ok(event_id)
 }
 
 pub(crate) async fn dependency_would_create_cycle(
