@@ -370,7 +370,34 @@ Agents can claim tasks temporarily. If they disappear, the lease expires and the
 
 ### Xanadu Link
 
-A special link between text entities that keeps their shared text synchronized through a transclusion group.
+A Xanadu link is more powerful than a normal semantic edge.
+
+With a normal link, `threadplane` records that two entities are related:
+
+- `task -> documents -> note`
+- `task -> depends_on -> task`
+- `note -> relates_to -> epic`
+
+That helps with discovery and graph traversal, but each side still owns its own text.
+
+With a Xanadu link, the linked text entities join the same transclusion group:
+
+- update the note, and the linked task text is rewritten too
+- update the task, and the linked note text is rewritten too
+- both sides keep their own IDs, history, and surrounding metadata
+- the shared text stays canonical instead of drifting into conflicting copies
+
+This is especially useful when:
+
+- one note contains the canonical wording for a task or decision
+- multiple agents need to edit the same operational text from different entry points
+- a task and its design note should stay synchronized without manual copy/paste
+
+Use a normal link when you want relation and provenance.
+Use a Xanadu link when you want shared living text.
+
+> [!TIP]
+> A good mental model is: normal links connect entities, Xanadu links connect text.
 
 ### Graph Projection
 
