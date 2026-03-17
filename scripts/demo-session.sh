@@ -3,14 +3,18 @@ set -euo pipefail
 
 TP_BIN="${TP_BIN:-./target/debug/threadplane-cli}"
 WORKSPACE="${THREADPLANE_DEMO_WORKSPACE:-demo-lab}"
+DEMO_COMMAND_PAUSE_SECONDS="${DEMO_COMMAND_PAUSE_SECONDS:-1.8}"
+DEMO_RESULT_PAUSE_SECONDS="${DEMO_RESULT_PAUSE_SECONDS:-2.4}"
+DEMO_INTRO_PAUSE_SECONDS="${DEMO_INTRO_PAUSE_SECONDS:-1.2}"
 
 run() {
     local display="$1"
     local command="$2"
     printf '\033[1;32m$\033[0m %s\n' "$display"
+    sleep "$DEMO_COMMAND_PAUSE_SECONDS"
     eval "$command"
     printf '\n'
-    sleep 0.6
+    sleep "$DEMO_RESULT_PAUSE_SECONDS"
 }
 
 epic_json="$("$TP_BIN" epic add \
@@ -53,7 +57,7 @@ note_json="$("$TP_BIN" note add \
 note_id="$(jq -r '.data.note_id' <<<"$note_json")"
 note_ref="$(jq -r '.data.entity_ref' <<<"$note_json")"
 
-sleep 0.8
+sleep "$DEMO_INTRO_PAUSE_SECONDS"
 
 run 'threadplane-cli scope 2>/dev/null | jq "{name, log: .poc.authoritative_log, graph: .poc.graph_projection}"' \
     "\"$TP_BIN\" scope 2>/dev/null | jq '{name, log: .poc.authoritative_log, graph: .poc.graph_projection}'"

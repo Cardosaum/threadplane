@@ -89,12 +89,15 @@ until curl -sf "http://127.0.0.1:${server_port}/healthz" >/dev/null; do
 done
 
 THREADPLANE_DEMO_WORKSPACE="$WORKSPACE" \
+DEMO_COMMAND_PAUSE_SECONDS="2.0" \
+DEMO_RESULT_PAUSE_SECONDS="2.8" \
+DEMO_INTRO_PAUSE_SECONDS="1.4" \
 TP_BIN="./target/debug/threadplane-cli" \
 asciinema record \
     --overwrite \
     --headless \
     --title "threadplane quick tour" \
-    --idle-time-limit 1.2 \
+    --idle-time-limit 3.0 \
     --window-size 100x26 \
     --command "./scripts/demo-session.sh" \
     docs/threadplane-demo.cast
@@ -117,9 +120,9 @@ agg \
     --font-family "JetBrains Mono,Fira Code,DejaVu Sans Mono" \
     --font-size 16 \
     --fps-cap 20 \
-    --speed 1.1 \
-    --idle-time-limit 1.2 \
-    --last-frame-duration 1.5 \
+    --speed 0.8 \
+    --idle-time-limit 3.0 \
+    --last-frame-duration 2.5 \
     --cols 96 \
     --rows 24 \
     docs/threadplane-demo.cast \
