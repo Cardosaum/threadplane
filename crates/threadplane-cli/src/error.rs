@@ -48,18 +48,20 @@ pub(crate) enum CliError {
     },
 
     #[snafu(display(
-        "failed to parse JSON response from {url}: the running server appears to use a different contract than this CLI. {details}. Run `threadplane build compare` and restart the server.\noriginal parse error: {source}"
+        "failed to parse JSON response from {url} at {json_path}: the running server appears to use a different contract than this CLI. {details}. Run `threadplane build compare` and restart the server.\noriginal parse error: {source}"
     ))]
     JsonContractMismatch {
         details: Box<ContractMismatchDetails>,
+        json_path: String,
         url: String,
         source: serde_json::Error,
         #[snafu(implicit)]
         location: snafu::Location,
     },
 
-    #[snafu(display("failed to parse JSON response from {url}: {source}"))]
+    #[snafu(display("failed to parse JSON response from {url} at {json_path}: {source}"))]
     JsonParse {
+        json_path: String,
         url: String,
         source: serde_json::Error,
         #[snafu(implicit)]
@@ -96,6 +98,23 @@ pub(crate) enum CliError {
     ResponseBodyRead {
         url: String,
         source: reqwest::Error,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("failed to resolve request path {path} against {base_url}: {source}"))]
+    UrlJoin {
+        base_url: String,
+        path: String,
+        source: url::ParseError,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+
+    #[snafu(display("failed to parse server URL {server}: {source}"))]
+    UrlParse {
+        server: String,
+        source: url::ParseError,
         #[snafu(implicit)]
         location: snafu::Location,
     },

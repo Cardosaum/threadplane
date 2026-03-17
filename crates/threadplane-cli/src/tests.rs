@@ -62,6 +62,7 @@ fn contract_mismatch_error_mentions_build_compare_guidance() {
             server_commit: "bbbbbbbbbbbb".to_owned(),
             server_version: "0.2.0".to_owned(),
         }),
+        json_path: "data.labels".to_owned(),
         url: "http://127.0.0.1:4000/v1/workspaces/threadplane-dev/tasks".to_owned(),
     }
     .into_error(serde_json::Error::io(IoError::other("missing field `labels`")));
