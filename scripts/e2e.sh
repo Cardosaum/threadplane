@@ -142,6 +142,23 @@ dag_json="$(
 [[ "$(jq -r '.data.dependencies[0].task_id' <<<"$dag_json")" == "$dependency_task_id" ]]
 [[ "$(jq -r '.data.dependencies[0].depth' <<<"$dag_json")" == "1" ]]
 
+blocked_by_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        task blocked-by \
+        --task-id "$task_id"
+)"
+[[ "$blocked_by_compact" == *"Ship durable task lifecycle"* ]]
+[[ "$blocked_by_compact" == *"depth=1"* ]]
+
+blocks_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        task blocks \
+        --task-id "$dependency_task_id" \
+        --direct-only
+)"
+[[ "$blocks_compact" == *"Investigate tuple leases"* ]]
+[[ "$blocks_compact" == *"depth=1"* ]]
+
 complete_dependency_json="$(
     cargo run -q -p threadplane-cli -- \
         task complete \

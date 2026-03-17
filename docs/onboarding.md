@@ -91,6 +91,8 @@ Inspect the task DAG and ready queue:
 ```bash
 cargo run -p threadplane-cli -- task show --task-id <task-id>
 cargo run -p threadplane-cli -- task dag --task-id <task-id>
+cargo run -p threadplane-cli -- task blocked-by --task-id <task-id>
+cargo run -p threadplane-cli -- task blocks --task-id <dependency-task-id> --direct-only
 
 cargo run -p threadplane-cli -- task list \
   --workspace shared-lab \

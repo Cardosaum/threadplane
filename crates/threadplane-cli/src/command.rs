@@ -17,8 +17,9 @@ use threadplane_core::{
     compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
     AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
     CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, TaskListEntry, TaskRecord, ThreadplaneConfig,
-    UpdateNoteRequest, UpdateTaskRequest, ApiEnvelope, SERVICE_NAME,
+    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary,
+    TaskListEntry, TaskRecord, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
+    ApiEnvelope, SERVICE_NAME,
 };
 
 use crate::{
@@ -275,6 +276,10 @@ struct TaskCommand {
 
 #[derive(Debug, Subcommand)]
 enum TaskSubcommand {
+    #[command(about = "Show tasks blocking the selected task")]
+    BlockedBy(TaskDependencyViewCommand),
+    #[command(about = "Show tasks that are blocked by the selected task")]
+    Blocks(TaskDependencyViewCommand),
     #[command(about = "Claim an open task with a lease")]
     Claim(ClaimTask),
     #[command(about = "Mark a task complete and release any active claim")]
@@ -312,6 +317,22 @@ struct ClaimTask {
 
     #[arg(long, help = "Workspace name")]
     workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct TaskDependencyViewCommand {
+    #[arg(long, help = "Only return direct relationships instead of the transitive chain")]
+    direct_only: bool,
+
+    #[arg(
+        long,
+        default_value = "compact",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: TaskListOutput,
+
+    #[arg(long, help = "Task UUID")]
+    task_id: Uuid,
 }
 
 #[derive(Debug, Args)]
@@ -498,6 +519,12 @@ struct TaskTriageSummary {
     workspace: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum TaskDependencyViewKind {
+    BlockedBy,
+    Blocks,
+}
+
 pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> Result<()> {
     let server = cli.server.unwrap_or_else(|| config.cli.url.clone());
 
@@ -514,7 +541,6 @@ pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> 
 
     Ok(())
 }
-
 fn handle_build(client: &Client, server: &str, command: &BuildCommand) -> Result<()> {
     match command.command {
         BuildSubcommand::Show => print_value(&current_build_info()),
@@ -666,106 +692,141 @@ fn handle_note(client: &Client, server: &str, command: NoteCommand) -> Result<()
 
 fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()> {
     match command.command {
-        TaskSubcommand::Claim(task) => {
-            let request = ClaimTaskRequest {
-                workspace: task.workspace,
-                actor: task.actor,
-                task_id: task.task_id,
-                lease_seconds: task.lease_seconds,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/claim", &request)?;
-            print_value(&response)
+        TaskSubcommand::BlockedBy(task) => handle_task_dependency_view(
+            client,
+            server,
+            &task,
+            TaskDependencyViewKind::BlockedBy,
+        ),
+        TaskSubcommand::Blocks(task) => {
+            handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::Blocks)
         }
-        TaskSubcommand::Complete(task) => {
-            let request = CompleteTaskRequest {
-                workspace: task.workspace,
-                actor: task.actor,
-                task_id: task.task_id,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/complete", &request)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Context(task) => {
-            let path = format!("/v1/tasks/{}/context", task.task_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Dag(task) => {
-            let path = format!("/v1/tasks/{}/dag", task.task_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Depend(task) => {
-            let request = AddTaskDependencyRequest {
-                workspace: task.workspace,
-                actor: task.actor,
-                task_id: task.task_id,
-                depends_on_task_id: task.depends_on,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/dependencies", &request)?;
-            print_value(&response)
-        }
-        TaskSubcommand::List(task) => {
-            let path = task_list_path(&task);
-            let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
-
-            match task.format {
-                TaskListOutput::Compact => {
-                    print!("{}", render_task_list_compact(&response.data));
-                    Ok(())
-                }
-                TaskListOutput::Json => print_value(&response),
-            }
-        }
-        TaskSubcommand::Offer(task) => {
-            let request = OfferTaskRequest {
-                workspace: task.workspace,
-                author: task.author,
-                depends_on: task.depends_on,
-                title: task.title,
-                details: task.details,
-                epic_id: task.epic_id,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/offers", &request)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Release(task) => {
-            let request = ReleaseTaskRequest {
-                workspace: task.workspace,
-                actor: task.actor,
-                task_id: task.task_id,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/release", &request)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Show(task) => {
-            let path = format!("/v1/tasks/{}", task.task_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
+        TaskSubcommand::Claim(task) => handle_claim_task(client, server, task),
+        TaskSubcommand::Complete(task) => handle_complete_task(client, server, task),
+        TaskSubcommand::Context(task) => handle_task_context(client, server, &task),
+        TaskSubcommand::Dag(task) => handle_task_dag(client, server, &task),
+        TaskSubcommand::Depend(task) => handle_add_task_dependency(client, server, task),
+        TaskSubcommand::List(task) => handle_list_tasks(client, server, &task),
+        TaskSubcommand::Offer(task) => handle_offer_task(client, server, task),
+        TaskSubcommand::Release(task) => handle_release_task(client, server, task),
+        TaskSubcommand::Show(task) => handle_show_task(client, server, &task),
         TaskSubcommand::Triage(task) => {
             let response = triage_tasks(client, server, &task)?;
             print_value(&response)
         }
-        TaskSubcommand::Update(task) => {
-            let request = UpdateTaskRequest {
-                workspace: task.workspace,
-                actor: task.actor,
-                task_id: task.task_id,
-                title: task.title,
-                details: task.details,
-                epic_id: task.epic_id,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/tasks/update", &request)?;
-            print_value(&response)
-        }
+        TaskSubcommand::Update(task) => handle_update_task(client, server, task),
     }
+}
+
+fn handle_add_task_dependency(client: &Client, server: &str, task: AddTaskDependency) -> Result<()> {
+    let request = AddTaskDependencyRequest {
+        workspace: task.workspace,
+        actor: task.actor,
+        task_id: task.task_id,
+        depends_on_task_id: task.depends_on,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/dependencies", &request)?;
+    print_value(&response)
+}
+
+fn handle_claim_task(client: &Client, server: &str, task: ClaimTask) -> Result<()> {
+    let request = ClaimTaskRequest {
+        workspace: task.workspace,
+        actor: task.actor,
+        task_id: task.task_id,
+        lease_seconds: task.lease_seconds,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/claim", &request)?;
+    print_value(&response)
+}
+
+fn handle_complete_task(client: &Client, server: &str, task: CompleteTask) -> Result<()> {
+    let request = CompleteTaskRequest {
+        workspace: task.workspace,
+        actor: task.actor,
+        task_id: task.task_id,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/complete", &request)?;
+    print_value(&response)
+}
+
+fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<()> {
+    let path = task_list_path(task);
+    let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
+
+    match task.format {
+        TaskListOutput::Compact => {
+            print!("{}", render_task_list_compact(&response.data));
+            Ok(())
+        }
+        TaskListOutput::Json => print_value(&response),
+    }
+}
+
+fn handle_offer_task(client: &Client, server: &str, task: OfferTask) -> Result<()> {
+    let request = OfferTaskRequest {
+        workspace: task.workspace,
+        author: task.author,
+        depends_on: task.depends_on,
+        title: task.title,
+        details: task.details,
+        epic_id: task.epic_id,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/offers", &request)?;
+    print_value(&response)
+}
+
+fn handle_release_task(client: &Client, server: &str, task: ReleaseTask) -> Result<()> {
+    let request = ReleaseTaskRequest {
+        workspace: task.workspace,
+        actor: task.actor,
+        task_id: task.task_id,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/release", &request)?;
+    print_value(&response)
+}
+
+fn handle_show_task(client: &Client, server: &str, task: &ShowTask) -> Result<()> {
+    let path = format!("/v1/tasks/{}", task.task_id);
+    let response: serde_json::Value = get_json(client, server, &path)?;
+    print_value(&response)
+}
+
+fn handle_task_context(client: &Client, server: &str, task: &TaskContextCommand) -> Result<()> {
+    let path = format!("/v1/tasks/{}/context", task.task_id);
+    let response: serde_json::Value = get_json(client, server, &path)?;
+    print_value(&response)
+}
+
+fn handle_task_dag(client: &Client, server: &str, task: &TaskDagCommand) -> Result<()> {
+    let path = format!("/v1/tasks/{}/dag", task.task_id);
+    let response: serde_json::Value = get_json(client, server, &path)?;
+    print_value(&response)
+}
+
+fn handle_update_task(client: &Client, server: &str, task: UpdateTask) -> Result<()> {
+    let request = UpdateTaskRequest {
+        workspace: task.workspace,
+        actor: task.actor,
+        task_id: task.task_id,
+        title: task.title,
+        details: task.details,
+        epic_id: task.epic_id,
+    };
+    let response: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+    print_value(&response)
+}
+
+fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<TaskContext> {
+    let path = format!("/v1/tasks/{task_id}/context");
+    let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
+    Ok(response.data)
+}
+
+fn fetch_task_dag(client: &Client, server: &str, task_id: Uuid) -> Result<TaskDag> {
+    let path = format!("/v1/tasks/{task_id}/dag");
+    let response: ApiEnvelope<TaskDag> = get_json(client, server, &path)?;
+    Ok(response.data)
 }
 
 fn fetch_task_summary(client: &Client, server: &str, task_id: Uuid) -> Result<TaskRecord> {
@@ -816,6 +877,29 @@ fn compact_epic_label(entry: &TaskListEntry) -> String {
         .map_or_else(|| "epic=none".to_owned(), |epic| format!("epic={}", epic.title))
 }
 
+fn handle_task_dependency_view(
+    client: &Client,
+    server: &str,
+    task: &TaskDependencyViewCommand,
+    kind: TaskDependencyViewKind,
+) -> Result<()> {
+    let data = if task.direct_only {
+        let context = fetch_task_context(client, server, task.task_id)?;
+        select_dependency_view_from_context(&context, kind).to_vec()
+    } else {
+        let dag = fetch_task_dag(client, server, task.task_id)?;
+        select_dependency_view_from_dag(&dag, kind).to_vec()
+    };
+
+    match task.format {
+        TaskListOutput::Compact => {
+            print!("{}", render_task_dependency_compact(&data));
+            Ok(())
+        }
+        TaskListOutput::Json => print_value(&data),
+    }
+}
+
 pub(crate) fn render_task_list_compact(entries: &[TaskListEntry]) -> String {
     if entries.is_empty() {
         return "no tasks\n".to_owned();
@@ -834,6 +918,27 @@ pub(crate) fn render_task_list_compact(entries: &[TaskListEntry]) -> String {
                 entry.dependents.len(),
                 compact_epic_label(entry),
                 compact_claim_label(entry),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
+pub(crate) fn render_task_dependency_compact(entries: &[TaskDependencySummary]) -> String {
+    if entries.is_empty() {
+        return "no tasks\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} | {} | status={} | depth={}",
+                short_task_id(&entry.task_id),
+                entry.title,
+                entry.status,
+                entry.depth
             )
         })
         .collect::<Vec<_>>();
@@ -872,6 +977,26 @@ fn task_list_path(task: &ListTasks) -> String {
     };
 
     format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
+}
+
+fn select_dependency_view_from_context(
+    context: &TaskContext,
+    kind: TaskDependencyViewKind,
+) -> &[TaskDependencySummary] {
+    match kind {
+        TaskDependencyViewKind::BlockedBy => &context.dependencies,
+        TaskDependencyViewKind::Blocks => &context.dependents,
+    }
+}
+
+fn select_dependency_view_from_dag(
+    dag: &TaskDag,
+    kind: TaskDependencyViewKind,
+) -> &[TaskDependencySummary] {
+    match kind {
+        TaskDependencyViewKind::BlockedBy => &dag.dependencies,
+        TaskDependencyViewKind::Blocks => &dag.dependents,
+    }
 }
 
 fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<TaskTriageSummary> {

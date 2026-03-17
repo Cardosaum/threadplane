@@ -1,7 +1,8 @@
 use uuid::Uuid;
 
 use crate::command::{
-    build_mismatch_warning, dedup_task_ids, render_task_list_compact, triage_has_changes,
+    build_mismatch_warning, dedup_task_ids, render_task_dependency_compact,
+    render_task_list_compact, triage_has_changes,
 };
 use threadplane_core::{
     build_info, compare_build_info, EpicRecord, TaskClaimRecord, TaskDependencySummary,
@@ -97,6 +98,26 @@ fn render_task_list_compact_formats_ready_tasks() {
 #[test]
 fn render_task_list_compact_handles_empty_lists() {
     assert_eq!(render_task_list_compact(&[]), "no tasks\n");
+}
+
+#[test]
+fn render_task_dependency_compact_formats_entries() {
+    let rendered = render_task_dependency_compact(&[TaskDependencySummary {
+        depth: 2,
+        entity_ref: "task:aaaaaaaa-0000-0000-0000-000000000000".to_owned(),
+        status: "completed".to_owned(),
+        task_id: Uuid::parse_str("aaaaaaaa-0000-0000-0000-000000000000").unwrap_or_default(),
+        title: "Ship durable task lifecycle".to_owned(),
+    }]);
+
+    assert!(rendered.contains("aaaaaaaa | Ship durable task lifecycle"));
+    assert!(rendered.contains("status=completed"));
+    assert!(rendered.contains("depth=2"));
+}
+
+#[test]
+fn render_task_dependency_compact_handles_empty_lists() {
+    assert_eq!(render_task_dependency_compact(&[]), "no tasks\n");
 }
 
 #[test]

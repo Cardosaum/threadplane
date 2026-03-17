@@ -133,6 +133,8 @@ Inspect the DAG view:
 ```bash
 cargo run -p threadplane-cli -- task show --task-id <task-id>
 cargo run -p threadplane-cli -- task dag --task-id <task-id>
+cargo run -p threadplane-cli -- task blocked-by --task-id <task-id>
+cargo run -p threadplane-cli -- task blocks --task-id <dependency-task-id> --direct-only
 ```
 
 Complete the prerequisite and ask for ready work:
@@ -213,6 +215,8 @@ Current commands:
 - `note add`
 - `note show`
 - `note update`
+- `task blocked-by`
+- `task blocks`
 - `task complete`
 - `task offer`
 - `task depend`
