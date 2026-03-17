@@ -29,7 +29,7 @@ use threadplane_core::{
 use crate::{
     build_info::current_build_info,
     error::{JsonRender, Result, Usage},
-    http::{get_json, post_json},
+    http::{get_json, patch_json, post_json},
 };
 
 #[derive(Debug, Parser)]
@@ -1025,11 +1025,12 @@ fn handle_note(
         NoteSubcommand::List(list) => handle_list_notes(client, server, &list),
         NoteSubcommand::Search(search) => handle_search_notes(client, server, &search),
         NoteSubcommand::Show(show) => {
-            let path = format!("/v1/notes/{}", show.note_id);
+            let path = note_path(show.note_id);
             let response: serde_json::Value = get_json(client, server, &path)?;
             print_value(&response)
         }
         NoteSubcommand::Update(update) => {
+            let path = note_path(update.note_id);
             let request = UpdateNoteRequest {
                 workspace: update.workspace,
                 actor: update.actor,
@@ -1038,7 +1039,7 @@ fn handle_note(
                 body: update.body,
             };
             let response: serde_json::Value =
-                post_json(client, server, "/v1/notes/update", &request, idempotency_key)?;
+                patch_json(client, server, &path, &request, idempotency_key)?;
             print_value(&response)
         }
     }
@@ -1148,7 +1149,7 @@ fn handle_add_task_dependency(
     let response: serde_json::Value = post_json(
         client,
         server,
-        "/v1/tasks/dependencies",
+        &task_dependencies_path(task.task_id),
         &request,
         idempotency_key,
     )?;
@@ -1167,8 +1168,8 @@ fn handle_claim_task(
         task_id: task.task_id,
         lease_seconds: task.lease_seconds,
     };
-    let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks/claim", &request, idempotency_key)?;
+    let path = task_claims_path(task.task_id);
+    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -1190,7 +1191,7 @@ fn handle_claim_next_task(
         workspace: task.workspace,
     };
     let response: ApiEnvelope<Option<TaskClaimRecord>> =
-        post_json(client, server, "/v1/tasks/claim-next", &request, idempotency_key)?;
+        post_json(client, server, "/v1/tasks/claims/next", &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -1205,8 +1206,8 @@ fn handle_complete_task(
         actor: task.actor,
         task_id: task.task_id,
     };
-    let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks/complete", &request, idempotency_key)?;
+    let path = task_completion_path(task.task_id);
+    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -1255,7 +1256,7 @@ fn handle_offer_task(
         metadata: task_metadata_from_args(task.metadata),
     };
     let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks/offers", &request, idempotency_key)?;
+        post_json(client, server, "/v1/tasks", &request, idempotency_key)?;
     print_value(&response)
 }
 
@@ -1270,25 +1271,25 @@ fn handle_release_task(
         actor: task.actor,
         task_id: task.task_id,
     };
-    let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks/release", &request, idempotency_key)?;
+    let path = task_claim_release_path(task.task_id);
+    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
     print_value(&response)
 }
 
 fn handle_show_task(client: &Client, server: &str, task: &ShowTask) -> Result<()> {
-    let path = format!("/v1/tasks/{}", task.task_id);
+    let path = task_path(task.task_id);
     let response: serde_json::Value = get_json(client, server, &path)?;
     print_value(&response)
 }
 
 fn handle_task_context(client: &Client, server: &str, task: &TaskContextCommand) -> Result<()> {
-    let path = format!("/v1/tasks/{}/context", task.task_id);
+    let path = task_context_path(task.task_id);
     let response: serde_json::Value = get_json(client, server, &path)?;
     print_value(&response)
 }
 
 fn handle_task_dag(client: &Client, server: &str, task: &TaskDagCommand) -> Result<()> {
-    let path = format!("/v1/tasks/{}/dag", task.task_id);
+    let path = task_dag_path(task.task_id);
     let response: serde_json::Value = get_json(client, server, &path)?;
     print_value(&response)
 }
@@ -1308,13 +1309,13 @@ fn handle_update_task(
         epic_id: task.epic_id,
         metadata: task_metadata_from_args(task.metadata),
     };
-    let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks/update", &request, idempotency_key)?;
+    let path = task_path(task.task_id);
+    let response: serde_json::Value = patch_json(client, server, &path, &request, idempotency_key)?;
     print_value(&response)
 }
 
 fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<TaskContext> {
-    let path = format!("/v1/tasks/{task_id}/context");
+    let path = task_context_path(task_id);
     let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
     Ok(response.data)
 }
@@ -1349,13 +1350,13 @@ fn handle_tail_events(client: &Client, server: &str, events: &TailEvents) -> Res
 }
 
 fn fetch_task_dag(client: &Client, server: &str, task_id: Uuid) -> Result<TaskDag> {
-    let path = format!("/v1/tasks/{task_id}/dag");
+    let path = task_dag_path(task_id);
     let response: ApiEnvelope<TaskDag> = get_json(client, server, &path)?;
     Ok(response.data)
 }
 
 fn fetch_task_summary(client: &Client, server: &str, task_id: Uuid) -> Result<TaskRecord> {
-    let path = format!("/v1/tasks/{task_id}");
+    let path = task_path(task_id);
     let response: ApiEnvelope<TaskRecord> = get_json(client, server, &path)?;
     Ok(response.data)
 }
@@ -1639,6 +1640,38 @@ fn task_next_path(task: &NextTask) -> String {
     format!("/v1/workspaces/{}/tasks/next{}", task.workspace, suffix)
 }
 
+fn note_path(note_id: Uuid) -> String {
+    format!("/v1/notes/{note_id}")
+}
+
+fn task_path(task_id: Uuid) -> String {
+    format!("/v1/tasks/{task_id}")
+}
+
+fn task_claim_release_path(task_id: Uuid) -> String {
+    format!("{}/claims/release", task_path(task_id))
+}
+
+fn task_claims_path(task_id: Uuid) -> String {
+    format!("{}/claims", task_path(task_id))
+}
+
+fn task_completion_path(task_id: Uuid) -> String {
+    format!("{}/completion", task_path(task_id))
+}
+
+fn task_context_path(task_id: Uuid) -> String {
+    format!("{}/context", task_path(task_id))
+}
+
+fn task_dag_path(task_id: Uuid) -> String {
+    format!("{}/dag", task_path(task_id))
+}
+
+fn task_dependencies_path(task_id: Uuid) -> String {
+    format!("{}/dependencies", task_path(task_id))
+}
+
 fn task_query_suffix(
     status: Option<&str>,
     epic_id: Option<Uuid>,
@@ -1786,8 +1819,13 @@ fn triage_tasks(
                 };
                 let request_key = idempotency_key
                     .map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
-                let _: serde_json::Value =
-                    post_json(client, server, "/v1/tasks/update", &request, request_key.as_deref())?;
+                let _: serde_json::Value = patch_json(
+                    client,
+                    server,
+                    &task_path(*task_id),
+                    &request,
+                    request_key.as_deref(),
+                )?;
                 updated_task_ids.push(*task_id);
                 changed = true;
             }
@@ -1805,8 +1843,13 @@ fn triage_tasks(
             };
             let request_key = idempotency_key
                 .map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
-            let _: serde_json::Value =
-                post_json(client, server, "/v1/tasks/update", &request, request_key.as_deref())?;
+            let _: serde_json::Value = patch_json(
+                client,
+                server,
+                &task_path(*task_id),
+                &request,
+                request_key.as_deref(),
+            )?;
             updated_task_ids.push(*task_id);
             changed = true;
         }
@@ -1819,8 +1862,13 @@ fn triage_tasks(
             };
             let request_key = idempotency_key
                 .map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
-            let _: serde_json::Value =
-                post_json(client, server, "/v1/tasks/complete", &request, request_key.as_deref())?;
+            let _: serde_json::Value = post_json(
+                client,
+                server,
+                &task_completion_path(*task_id),
+                &request,
+                request_key.as_deref(),
+            )?;
             completed_task_ids.push(*task_id);
             changed = true;
         }

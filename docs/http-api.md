@@ -25,7 +25,7 @@ http://127.0.0.1:4000
 
 ## Idempotency
 
-Every mutating `POST` endpoint accepts an optional `Idempotency-Key` header.
+Every mutating `POST` or `PATCH` endpoint accepts an optional `Idempotency-Key` header.
 
 - The key is scoped by `workspace`, `actor`, `command_kind`, and the request payload.
 - Repeating the same command with the same payload replays the original successful response.
@@ -54,8 +54,9 @@ Request:
 }
 ```
 
-`POST /v1/notes/update`
+`PATCH /v1/notes/{note_id}`
 - Update a note and propagate through Xanadu links when present.
+  The current request body still includes `note_id` so idempotent command payloads remain self-contained.
 
 `GET /v1/notes/{note_id}`
 - Fetch a note by ID.
@@ -103,7 +104,7 @@ Examples:
 
 ## Tasks
 
-`POST /v1/tasks/offers`
+`POST /v1/tasks`
 - Offer a new task into a workspace. Tasks can optionally attach to an epic and declare direct dependencies at creation time.
 
 Request:
@@ -122,8 +123,9 @@ Request:
 }
 ```
 
-`POST /v1/tasks/update`
+`PATCH /v1/tasks/{task_id}`
 - Update a task and propagate through Xanadu links when present. `epic_id` can also be supplied to attach the task to an epic.
+  The current request body still includes `task_id` so idempotent command payloads remain self-contained.
 
 Request:
 
@@ -141,8 +143,9 @@ Request:
 }
 ```
 
-`POST /v1/tasks/claim`
+`POST /v1/tasks/{task_id}/claims`
 - Claim an open task with a lease.
+  The current request body still includes `task_id`.
 
 Request:
 
@@ -155,17 +158,20 @@ Request:
 }
 ```
 
-`POST /v1/tasks/claim-next`
+`POST /v1/tasks/claims/next`
 - Claim the best next ready `open` task in the workspace, with optional epic/owner/priority/label filters.
 
-`POST /v1/tasks/release`
+`POST /v1/tasks/{task_id}/claims/release`
 - Release an active claim and move the task back to `open`.
+  The current request body still includes `task_id`.
 
-`POST /v1/tasks/complete`
+`POST /v1/tasks/{task_id}/completion`
 - Mark a task `completed` and release any active claim.
+  The current request body still includes `task_id`.
 
-`POST /v1/tasks/dependencies`
+`POST /v1/tasks/{task_id}/dependencies`
 - Declare a direct `task -> depends_on -> task` edge. The server rejects edges that would create a cycle.
+  The current request body still includes `task_id`.
 
 Request:
 

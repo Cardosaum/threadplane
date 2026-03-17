@@ -160,7 +160,7 @@ fn execute_operation(client: &Client, worker_context: &WorkerContext, plan: Oper
             post_json(
                 client,
                 &worker_context.server,
-                "/v1/tasks/offers",
+                "/v1/tasks",
                 &request_body,
             )
         }

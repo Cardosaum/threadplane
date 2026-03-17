@@ -282,7 +282,11 @@ fn entity_routes() -> Router<AppState> {
 fn epic_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(create_epic))
-        .route("/{epic_id}", get(show_epic))
+        .nest("/{epic_id}", epic_member_routes())
+}
+
+fn epic_member_routes() -> Router<AppState> {
+    Router::new().route("/", get(show_epic))
 }
 
 fn link_routes() -> Router<AppState> {
@@ -294,8 +298,11 @@ fn link_routes() -> Router<AppState> {
 fn note_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(create_note))
-        .route("/update", post(update_note))
-        .route("/{note_id}", get(show_note))
+        .nest("/{note_id}", note_member_routes())
+}
+
+fn note_member_routes() -> Router<AppState> {
+    Router::new().route("/", get(show_note).patch(update_note))
 }
 
 fn projection_routes() -> Router<AppState> {
@@ -304,16 +311,24 @@ fn projection_routes() -> Router<AppState> {
 
 fn task_routes() -> Router<AppState> {
     Router::new()
-        .route("/claim", post(claim_task))
-        .route("/claim-next", post(claim_next_task))
-        .route("/complete", post(complete_task))
+        .route("/", post(offer_task))
+        .nest("/claims", task_claim_routes())
+        .nest("/{task_id}", task_member_routes())
+}
+
+fn task_claim_routes() -> Router<AppState> {
+    Router::new().route("/next", post(claim_next_task))
+}
+
+fn task_member_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(show_task).patch(update_task))
+        .route("/claims", post(claim_task))
+        .route("/claims/release", post(release_task))
+        .route("/completion", post(complete_task))
+        .route("/context", get(task_context))
+        .route("/dag", get(task_dag))
         .route("/dependencies", post(add_task_dependency))
-        .route("/offers", post(offer_task))
-        .route("/release", post(release_task))
-        .route("/update", post(update_task))
-        .route("/{task_id}", get(show_task))
-        .route("/{task_id}/context", get(task_context))
-        .route("/{task_id}/dag", get(task_dag))
 }
 
 fn workspace_routes() -> Router<AppState> {
