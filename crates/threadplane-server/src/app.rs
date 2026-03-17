@@ -131,8 +131,11 @@ struct ServerRuntime {
 
 impl ServerRuntime {
     async fn bootstrap(config: AppConfig) -> ServerResult<Self> {
+        info!("bootstrapping server runtime");
         let dependencies = connect_dependencies(&config).await?;
+        info!(bind_addr = %config.bind_addr, "connected external dependencies");
         let listener = bind_listener(config.bind_addr).await?;
+        info!(bind_addr = %config.bind_addr, "bound tcp listener");
         let lease_policy = LeasePolicy::new(config.default_lease_seconds);
         let projection_coordinator = ProjectionCoordinator::default();
         let state = AppState::new(dependencies, lease_policy, projection_coordinator);
@@ -163,11 +166,14 @@ impl ServerRuntime {
         &self,
         shutdown_token: &CancellationToken,
     ) -> ServerResult<(CancellationToken, JoinHandle<()>)> {
+        info!(
+            projection = GRAPH_PROJECTION_NAME,
+            "catching up graph projection before serving"
+        );
         let replayed = Box::pin(catch_up_graph_projection(&self.state)).await?;
         info!(
             projection = GRAPH_PROJECTION_NAME,
-            replayed,
-            "caught up graph projection before serving"
+            replayed, "caught up graph projection before serving"
         );
 
         let projection_shutdown = shutdown_token.clone();
@@ -332,16 +338,28 @@ async fn bind_listener(bind_addr: SocketAddr) -> ServerResult<TcpListener> {
 }
 
 async fn connect_dependencies(config: &AppConfig) -> ServerResult<AppDependencies> {
-    let pool = connect_postgres(&config.database_url).await?;
-    run_migrations(&pool).await?;
-    let graph = connect_neo4j(
+    let pool = connect_postgres_with_migrations(config).await?;
+    let graph = connect_graph_projection(config).await?;
+    info!("connected postgres and neo4j");
+    Ok(AppDependencies::new(graph, pool))
+}
+
+async fn connect_graph_projection(config: &AppConfig) -> ServerResult<Arc<Graph>> {
+    info!("connecting neo4j");
+    connect_neo4j(
         &config.neo4j_uri,
         &config.neo4j_user,
         &config.neo4j_password,
     )
-    .await?;
+    .await
+}
 
-    Ok(AppDependencies::new(graph, pool))
+async fn connect_postgres_with_migrations(config: &AppConfig) -> ServerResult<PgPool> {
+    info!("connecting postgres");
+    let pool = connect_postgres(&config.database_url).await?;
+    info!("running postgres migrations");
+    run_migrations(&pool).await?;
+    Ok(pool)
 }
 
 async fn connect_neo4j(
