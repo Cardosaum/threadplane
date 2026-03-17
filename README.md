@@ -105,6 +105,8 @@ For repeatable throughput and latency checks, use the benchmark harness:
 ./scripts/benchmark.sh mixed
 ```
 
+The benchmark scripts run `threadplane-bench` in release mode. For useful comparisons, run the server in release mode too.
+
 To capture durable local baselines for later comparison:
 
 ```bash

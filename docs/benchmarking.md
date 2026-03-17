@@ -1,6 +1,7 @@
 # Benchmarking
 
 `threadplane-bench` is the repeatable load harness for the repository. It drives the public HTTP API and reports machine-readable throughput and latency summaries, so we can compare runs over time without inventing a second measurement toolchain.
+The benchmark scripts always run the harness in `--release`, because debug-mode benchmark numbers are misleading.
 
 ## Quick Start
 
@@ -15,6 +16,7 @@ That wrapper defaults to:
 - `100` total operations
 - `8` worker threads
 - a generated benchmark workspace name
+- a release-mode benchmark binary
 
 It prints a JSON report with:
 
@@ -29,7 +31,7 @@ It prints a JSON report with:
 ## Direct Usage
 
 ```bash
-cargo run -q -p threadplane-bench -- \
+cargo run -q -p threadplane-bench --release -- \
   run \
   --workspace bench-lab \
   --scenario mixed \
@@ -46,6 +48,7 @@ Available scenarios:
 ## Suggested Flow
 
 1. Start a local or remote `threadplane-server`
+   Prefer a release build here too: `cargo run -p threadplane-server --release`
 2. Run one warm-up pass
 3. Run the same profile several times
 4. Save the JSON output for comparison
@@ -67,7 +70,7 @@ When you want a durable local benchmark snapshot instead of a one-off run, use:
 That script:
 
 - runs both `note-writes` and `mixed`
-- stores timestamped JSON reports under `benchmarks/baselines/local-debug/`
+- stores timestamped JSON reports under `benchmarks/baselines/local-release/`
 - records the operation counts and concurrency used for the capture
 - writes a small `README.txt` beside the reports so the capture is self-describing
 
@@ -79,6 +82,7 @@ CONCURRENCY=16 NOTE_WRITES_OPERATIONS=250 MIXED_OPERATIONS=250 \
 ```
 
 The generated JSON includes the `threadplane-bench` build identity plus the server build identity when the server exposes it, so later comparisons have enough provenance to explain drift.
+For stable comparisons, the server under test should also be a release build.
 
 ## What This Is For
 

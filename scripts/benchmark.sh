@@ -10,7 +10,7 @@ CONCURRENCY="${CONCURRENCY:-8}"
 WORKSPACE="${WORKSPACE:-bench-$(date +%Y%m%d-%H%M%S)}"
 ACTOR_PREFIX="${ACTOR_PREFIX:-bench}"
 
-cargo run -q -p threadplane-bench -- \
+cargo run -q -p threadplane-bench --release -- \
     run \
     --workspace "$WORKSPACE" \
     --scenario "$SCENARIO" \
