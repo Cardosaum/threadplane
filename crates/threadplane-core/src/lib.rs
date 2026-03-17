@@ -1,3 +1,5 @@
+extern crate alloc;
+
 mod config;
 mod types;
 
@@ -11,15 +13,19 @@ pub use self::config::{
 };
 pub use self::types::{
     build_info, compare_build_info, epic_entity_ref, health_summary, note_entity_ref,
-    normalize_task_labels, normalize_task_owner, parse_entity_ref, relation_type, scope_summary,
-    service_snapshot, task_entity_ref, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope,
-    BuildComparison, BuildFieldDifference, BuildInfo, ClaimNextTaskRequest, ClaimTaskRequest,
-    CommandReceipt, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityContext, EntityRecord, EntityRef, EpicRecord, EventEnvelope,
-    EventKind, EventRecord, GraphRelation, LinkRecord, NoteRecord, OfferTaskRequest,
-    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
-    TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary,
-    UpdateNoteRequest, UpdateTaskRequest,
+    normalize_task_labels, normalize_task_owner, normalize_workspace_priority_name,
+    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref,
+    validate_workspace_auth_policy, validate_workspace_policy, validate_workspace_priority_policy,
+    ActorPublicKey, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, BuildComparison,
+    BuildFieldDifference, BuildInfo, ClaimNextTaskRequest, ClaimTaskRequest, CommandReceipt,
+    CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest,
+    EntityContext, EntityRecord, EntityRef, EpicRecord, EventEnvelope, EventKind, EventRecord,
+    GraphRelation, LinkRecord, NoteRecord, OfferTaskRequest, ProjectionStatus,
+    PublicKeyAlgorithm, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext,
+    TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
+    TaskSummary, UpdateNoteRequest, UpdateTaskRequest, WorkspaceAuthPolicy, WorkspaceMembership,
+    WorkspacePolicy, WorkspacePolicyValidationError, WorkspacePriority,
+    WorkspacePriorityPolicy, WorkspaceRole,
 };
 
 #[cfg(test)]

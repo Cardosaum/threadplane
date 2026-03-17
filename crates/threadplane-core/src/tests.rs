@@ -11,9 +11,12 @@ use crate::{
     build_info, compare_build_info, default_config_path, default_system_config_paths,
     discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_overrides,
     load_threadplane_config_with_path, normalize_task_labels, normalize_task_owner,
-    note_entity_ref, parse_entity_ref, relation_type, scope_summary, service_snapshot,
-    task_entity_ref, CliConfigOverrides, EntityRef, EventKind, TaskPriority,
-    ThreadplaneConfigOverrides, ENV_PREFIX,
+    normalize_workspace_priority_name, note_entity_ref, parse_entity_ref, relation_type,
+    scope_summary, service_snapshot, task_entity_ref, validate_workspace_auth_policy,
+    validate_workspace_policy, validate_workspace_priority_policy, CliConfigOverrides, EntityRef,
+    EventKind, PublicKeyAlgorithm, TaskPriority, ThreadplaneConfigOverrides,
+    WorkspaceAuthPolicy, WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy,
+    WorkspaceRole, ENV_PREFIX,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -311,6 +314,120 @@ fn task_priority_parses_snake_case_values(#[case] input: &str, #[case] expected:
     assert_eq!(input.parse::<TaskPriority>().ok(), Some(expected));
 }
 
+#[rstest]
+#[case(WorkspaceRole::Viewer, true, false, false)]
+#[case(WorkspaceRole::Editor, true, true, false)]
+#[case(WorkspaceRole::Admin, true, true, true)]
+fn workspace_role_capabilities_are_ordered(
+    #[case] role: WorkspaceRole,
+    #[case] can_view: bool,
+    #[case] can_edit: bool,
+    #[case] can_administer: bool,
+) {
+    assert_eq!(role.can_view(), can_view);
+    assert_eq!(role.can_edit(), can_edit);
+    assert_eq!(role.can_administer(), can_administer);
+}
+
+#[rstest]
+#[case("Urgent Fix", "urgent_fix")]
+#[case("expedite-now", "expedite_now")]
+#[case("  customer blocker  ", "customer_blocker")]
+fn normalize_workspace_priority_name_examples(
+    #[case] input: &str,
+    #[case] expected: &str,
+) {
+    assert_eq!(normalize_workspace_priority_name(input), expected);
+}
+
+#[test]
+fn validate_workspace_priority_policy_accepts_unique_ranked_priorities() {
+    let policy = sample_workspace_priority_policy();
+
+    assert_eq!(validate_workspace_priority_policy(&policy), Ok(()));
+}
+
+#[test]
+fn validate_workspace_priority_policy_rejects_duplicate_names_after_normalization() {
+    let policy = WorkspacePriorityPolicy {
+        default_priority: "urgent_fix".to_owned(),
+        priorities: vec![
+            WorkspacePriority {
+                name: "Urgent Fix".to_owned(),
+                rank: 10,
+                description: None,
+            },
+            WorkspacePriority {
+                name: "urgent_fix".to_owned(),
+                rank: 20,
+                description: None,
+            },
+        ],
+    };
+
+    let rendered = validate_workspace_priority_policy(&policy)
+        .err()
+        .map(|error| error.to_string());
+    assert_eq!(
+        rendered.as_deref(),
+        Some("workspace priorities must use unique normalized names; duplicate `urgent_fix`")
+    );
+}
+
+#[test]
+fn validate_workspace_priority_policy_rejects_missing_default_priority() {
+    let policy = WorkspacePriorityPolicy {
+        default_priority: "normal".to_owned(),
+        priorities: vec![WorkspacePriority {
+            name: "expedite".to_owned(),
+            rank: 10,
+            description: None,
+        }],
+    };
+
+    let rendered = validate_workspace_priority_policy(&policy)
+        .err()
+        .map(|error| error.to_string());
+    assert_eq!(
+        rendered.as_deref(),
+        Some("workspace priorities must include the default priority `normal`")
+    );
+}
+
+#[test]
+fn validate_workspace_auth_policy_rejects_empty_algorithm_lists() {
+    let rendered = validate_workspace_auth_policy(&WorkspaceAuthPolicy {
+        allowed_algorithms: Vec::new(),
+        challenge_ttl_seconds: 60,
+        signed_commands_required: true,
+    })
+    .err()
+    .map(|error| error.to_string());
+
+    assert_eq!(
+        rendered.as_deref(),
+        Some("workspace auth policy must support at least one public-key algorithm")
+    );
+}
+
+#[test]
+fn validate_workspace_policy_accepts_governed_workspace_shape() {
+    let policy = WorkspacePolicy {
+        auth: WorkspaceAuthPolicy {
+            allowed_algorithms: vec![
+                PublicKeyAlgorithm::SshEd25519,
+                PublicKeyAlgorithm::Ed25519,
+            ],
+            challenge_ttl_seconds: 90,
+            signed_commands_required: true,
+        },
+        priorities: sample_workspace_priority_policy(),
+        workspace: "shared-lab".to_owned(),
+    };
+
+    assert_eq!(validate_workspace_policy(&policy), Ok(()));
+}
+
 proptest::proptest! {
     #[test]
     fn formatted_epic_refs_round_trip(epic_id in uuid_inputs()) {
@@ -363,4 +480,27 @@ neo4j_password = "neo4j-secret"
 neo4j_uri = "127.0.0.1:7687"
 neo4j_user = "neo4j"
 "#
+}
+
+fn sample_workspace_priority_policy() -> WorkspacePriorityPolicy {
+    WorkspacePriorityPolicy {
+        default_priority: "normal".to_owned(),
+        priorities: vec![
+            WorkspacePriority {
+                name: "background".to_owned(),
+                rank: 10,
+                description: Some("Useful but not urgent.".to_owned()),
+            },
+            WorkspacePriority {
+                name: "normal".to_owned(),
+                rank: 20,
+                description: Some("Expected day-to-day work.".to_owned()),
+            },
+            WorkspacePriority {
+                name: "expedite".to_owned(),
+                rank: 30,
+                description: Some("Pull forward ahead of normal backlog.".to_owned()),
+            },
+        ],
+    }
 }
