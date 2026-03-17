@@ -835,6 +835,7 @@ pub(crate) async fn add_xanadu_link(
         "from": request.from,
         "to": request.to,
         "transclusion_id": xanadu_group.canonical_group_id,
+        "merged_group_id": xanadu_group.merged_group_id,
     });
     let event_id = append_event(
         &mut tx,

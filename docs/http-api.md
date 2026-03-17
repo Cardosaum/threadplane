@@ -1,6 +1,7 @@
 # HTTP API
 
 `threadplane-server` is the write boundary for the POC. The CLI is a thin wrapper over these endpoints.
+On startup, the server applies migrations, replays any unprojected events into Neo4j, and then keeps a background replay worker running with persisted projection offsets in PostgreSQL.
 
 Base URL example:
 

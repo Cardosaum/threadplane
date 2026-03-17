@@ -36,7 +36,8 @@ use crate::{
         update_note, update_task,
     },
     lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
-    storage::ensure_schema,
+    migration::run_migrations,
+    replay::{catch_up_graph_projection, spawn_graph_projection_worker, GRAPH_PROJECTION_NAME},
 };
 use threadplane_core::{load_threadplane_config, ThreadplaneConfig, SERVICE_NAME};
 
@@ -116,6 +117,8 @@ impl ServerRuntime {
     }
 
     async fn run(self, shutdown_token: CancellationToken) -> ServerResult<()> {
+        let (projection_shutdown, projection_worker) =
+            self.start_projection_worker(&shutdown_token).await?;
         info!(service = SERVICE_NAME, bind_addr = %self.bind_addr, "server listening");
 
         let app = build_router(self.state.clone());
@@ -123,8 +126,38 @@ impl ServerRuntime {
             .with_graceful_shutdown(wait_for_shutdown(shutdown_token))
             .await
             .context(Serve);
+        stop_projection_worker(projection_shutdown, projection_worker).await;
         self.state.shutdown().await;
         serve_result
+    }
+
+    async fn start_projection_worker(
+        &self,
+        shutdown_token: &CancellationToken,
+    ) -> ServerResult<(CancellationToken, JoinHandle<()>)> {
+        let replayed = catch_up_graph_projection(&self.state).await?;
+        info!(
+            projection = GRAPH_PROJECTION_NAME,
+            replayed,
+            "caught up graph projection before serving"
+        );
+
+        let projection_shutdown = shutdown_token.clone();
+        let projection_worker =
+            spawn_graph_projection_worker(self.state.clone(), projection_shutdown.clone());
+        Ok((projection_shutdown, projection_worker))
+    }
+}
+
+async fn stop_projection_worker(
+    projection_shutdown: CancellationToken,
+    projection_worker: JoinHandle<()>,
+) {
+    projection_shutdown.cancel();
+    if let Err(error) = projection_worker.await {
+        if !error.is_cancelled() {
+            error!(?error, "projection worker terminated unexpectedly");
+        }
     }
 }
 
@@ -267,7 +300,7 @@ async fn bind_listener(bind_addr: SocketAddr) -> ServerResult<TcpListener> {
 
 async fn connect_dependencies(config: &AppConfig) -> ServerResult<AppDependencies> {
     let pool = connect_postgres(&config.database_url).await?;
-    ensure_schema(&pool).await?;
+    run_migrations(&pool).await?;
     let graph = connect_neo4j(
         &config.neo4j_uri,
         &config.neo4j_user,

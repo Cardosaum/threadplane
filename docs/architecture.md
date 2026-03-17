@@ -8,7 +8,7 @@
 - clients never treat the graph as the source of truth
 - all durable changes enter as commands handled by `threadplane-server`
 
-The service validates commands, appends immutable events to PostgreSQL, then updates projections for query workloads.
+The service validates commands, appends immutable events to PostgreSQL, then updates projections for query workloads. In the current shape, writes still project synchronously for low-latency reads, and a background replay worker keeps Neo4j catch-up durable through persisted projection offsets.
 
 ## Why This Shape
 
@@ -35,6 +35,7 @@ Responsibilities:
 - persist tuple offers and leases
 - support replay into downstream projections
 - provide reliable transactional semantics
+- evolve schema through versioned `sqlx` migrations
 
 Why PostgreSQL:
 
@@ -106,10 +107,10 @@ Every durable action follows the same path:
 2. Service authenticates the actor and checks workspace policy.
 3. Service validates payload shape and idempotency key.
 4. Service appends one or more events in PostgreSQL.
-5. Service updates or schedules projection work.
+5. Service updates projections synchronously on the write path and records enough state to replay them later.
 6. Query models become visible through HTTP, CLI, or MCP.
 
-The first POC can do projection updates synchronously after event append. Later we can move to asynchronous workers while preserving the same event contract.
+The current POC keeps synchronous projection for fast local reads, but it also persists a `projection_offsets` watermark and runs a replay worker so the graph can be rebuilt or caught up after outages without changing the command contract.
 
 ## Initial Command Vocabulary
 
@@ -248,4 +249,3 @@ Build this narrow slice first:
   "show me everything relevant to this task, including blockers, recent notes, and supporting facts"
 
 If that query feels powerful in real use, the architecture is worth extending.
-

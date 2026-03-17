@@ -1,7 +1,9 @@
 use chrono::Utc;
+use proptest::arbitrary::any;
 use proptest::prop_assert_eq;
 use rstest::rstest;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::{
     build_info::current_build_info,
@@ -9,7 +11,8 @@ use crate::{
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
-    storage::{event_kind_name, parse_event_kind, schema_statements, task_priority_rank},
+    migration::{INITIAL_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL},
+    storage::{event_kind_name, parse_event_kind, task_priority_rank, ProjectionCursor},
 };
 use threadplane_core::{EventKind, TaskPriority};
 
@@ -86,14 +89,24 @@ fn event_kind_round_trips_through_storage_names(
 #[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner TEXT")]
 #[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'")]
 #[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS transclusion_id UUID")]
-fn schema_statements_cover_poc_storage_surfaces(#[case] expected_fragment: &str) {
-    let has_fragment = schema_statements()
-        .iter()
-        .any(|statement| statement.contains(expected_fragment));
-
+fn initial_migration_covers_poc_storage_surfaces(#[case] expected_fragment: &str) {
+    let has_fragment = INITIAL_MIGRATION_SQL.contains(expected_fragment);
     assert!(
         has_fragment,
-        "missing schema statement fragment: {expected_fragment}"
+        "missing migration fragment: {expected_fragment}"
+    );
+}
+
+#[rstest]
+#[case("CREATE TABLE IF NOT EXISTS projection_offsets")]
+#[case("projection_name TEXT PRIMARY KEY")]
+#[case("last_event_created_at TIMESTAMPTZ")]
+#[case("last_event_id UUID")]
+fn projection_offsets_migration_covers_replay_cursor_storage(#[case] expected_fragment: &str) {
+    let has_fragment = PROJECTION_OFFSETS_MIGRATION_SQL.contains(expected_fragment);
+    assert!(
+        has_fragment,
+        "missing migration fragment: {expected_fragment}"
     );
 }
 
@@ -116,6 +129,18 @@ proptest::proptest! {
             expires_at.map(|value| value.signed_duration_since(claimed_at).num_seconds()),
             Some(lease_seconds)
         );
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn projection_cursor_preserves_event_identity(event_bytes in any::<[u8; 16]>()) {
+        let created_at = Utc::now();
+        let event_id = Uuid::from_bytes(event_bytes);
+        let cursor = ProjectionCursor::new(created_at, event_id);
+
+        prop_assert_eq!(cursor.created_at, created_at);
+        prop_assert_eq!(cursor.event_id, event_id);
     }
 }
 

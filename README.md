@@ -70,6 +70,8 @@ docker compose up -d
 cargo run -p threadplane-server
 ```
 
+On startup, the server applies versioned `sqlx` migrations from [`crates/threadplane-server/migrations`](./crates/threadplane-server/migrations), catches the graph projection up from PostgreSQL, and keeps a replay worker running with persisted projection offsets. A fresh database bootstraps cleanly, and a stale or empty Neo4j graph can be rebuilt without inventing a second source of truth.
+
 4. In another terminal, inspect the service:
 
 ```bash
@@ -295,6 +297,7 @@ neo4j_user = "neo4j"
 - `threadplane-server` is the write boundary.
 - PostgreSQL is the system of record.
 - Neo4j is a rebuildable graph projection.
+- PostgreSQL also stores projection replay offsets, so catch-up survives restarts.
 - Tuple-space semantics live in the service layer.
 - Tasks can belong to first-class epics and depend on other tasks without creating cycles.
 - Claims use leases so work returns to the pool if an agent disappears.

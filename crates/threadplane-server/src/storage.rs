@@ -68,178 +68,33 @@ pub(crate) const TASK_SELECT: &str = "
     FROM tasks
 ";
 
-pub(crate) async fn ensure_schema(pool: &PgPool) -> ServerResult<()> {
-    for statement in schema_statements() {
-        sqlx::query(statement).execute(pool).await?;
-    }
+pub(crate) const CLAIM_SELECT: &str = "
+    SELECT
+        claim_id,
+        task_id,
+        workspace,
+        actor,
+        event_id,
+        claimed_at,
+        expires_at,
+        released_at
+    FROM task_claims
+";
 
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "Schema bootstrap is intentionally centralized as one ordered statement list."
-)]
-pub(crate) const fn schema_statements() -> &'static [&'static str] {
-    &[
-        "
-        CREATE TABLE IF NOT EXISTS events (
-            event_id UUID PRIMARY KEY,
-            workspace TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            payload JSONB NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS epics (
-            epic_id UUID PRIMARY KEY,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            workspace TEXT NOT NULL,
-            author TEXT NOT NULL,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS notes (
-            note_id UUID PRIMARY KEY,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            workspace TEXT NOT NULL,
-            author TEXT NOT NULL,
-            title TEXT NOT NULL,
-            body TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS tasks (
-            task_id UUID PRIMARY KEY,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            workspace TEXT NOT NULL,
-            author TEXT NOT NULL,
-            title TEXT NOT NULL,
-            details TEXT NOT NULL,
-            status TEXT NOT NULL,
-            epic_id UUID NULL,
-            priority TEXT NOT NULL DEFAULT 'medium',
-            owner TEXT NULL,
-            labels TEXT[] NOT NULL DEFAULT '{}',
-            created_at TIMESTAMPTZ NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS task_claims (
-            claim_id UUID PRIMARY KEY,
-            task_id UUID NOT NULL REFERENCES tasks(task_id),
-            workspace TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            claimed_at TIMESTAMPTZ NOT NULL,
-            expires_at TIMESTAMPTZ NOT NULL,
-            released_at TIMESTAMPTZ NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS links (
-            link_id UUID PRIMARY KEY,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            workspace TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            from_entity_ref TEXT NOT NULL,
-            to_entity_ref TEXT NOT NULL,
-            relation TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS task_dependencies (
-            task_id UUID NOT NULL REFERENCES tasks(task_id),
-            depends_on_task_id UUID NOT NULL REFERENCES tasks(task_id),
-            workspace TEXT NOT NULL,
-            actor TEXT NOT NULL,
-            event_id UUID NOT NULL REFERENCES events(event_id),
-            created_at TIMESTAMPTZ NOT NULL,
-            PRIMARY KEY (task_id, depends_on_task_id)
-        )
-        ",
-        "
-        CREATE TABLE IF NOT EXISTS transclusion_groups (
-            transclusion_id UUID PRIMARY KEY,
-            workspace TEXT NOT NULL,
-            created_by TEXT NOT NULL,
-            title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL
-        )
-        ",
-        "ALTER TABLE notes ADD COLUMN IF NOT EXISTS transclusion_id UUID",
-        "ALTER TABLE notes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
-        "ALTER TABLE epics ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ",
-        "UPDATE epics SET updated_at = created_at WHERE updated_at IS NULL",
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS transclusion_id UUID",
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS epic_id UUID",
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'medium'",
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner TEXT",
-        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'",
-        "ALTER TABLE links ADD COLUMN IF NOT EXISTS is_xanadu BOOLEAN NOT NULL DEFAULT false",
-        "ALTER TABLE links ADD COLUMN IF NOT EXISTS transclusion_id UUID",
-        "UPDATE notes SET updated_at = created_at WHERE updated_at IS NULL",
-        "
-        CREATE INDEX IF NOT EXISTS idx_events_workspace_created_at
-        ON events (workspace, created_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status_created_at
-        ON tasks (workspace, status, created_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_epic_id_created_at
-        ON tasks (workspace, epic_id, created_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_priority_created_at
-        ON tasks (workspace, priority, created_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_owner_created_at
-        ON tasks (workspace, owner, created_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_labels_gin
-        ON tasks USING GIN (labels)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_task_claims_task_id_expires_at
-        ON task_claims (task_id, expires_at DESC)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_task_dependencies_task_id
-        ON task_dependencies (task_id)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_task_dependencies_depends_on_task_id
-        ON task_dependencies (depends_on_task_id)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_notes_transclusion_id
-        ON notes (transclusion_id)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_tasks_transclusion_id
-        ON tasks (transclusion_id)
-        ",
-        "
-        CREATE INDEX IF NOT EXISTS idx_epics_workspace_created_at
-        ON epics (workspace, created_at DESC)
-        ",
-    ]
-}
+pub(crate) const LINK_SELECT: &str = "
+    SELECT
+        link_id,
+        event_id,
+        workspace,
+        actor,
+        from_entity_ref,
+        to_entity_ref,
+        relation,
+        is_xanadu,
+        transclusion_id,
+        created_at
+    FROM links
+";
 
 pub(crate) async fn append_event(
     tx: &mut Transaction<'_, Postgres>,
@@ -277,6 +132,22 @@ pub(crate) fn unique_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
     unique_ids
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectionCursor {
+    pub(crate) created_at: DateTime<Utc>,
+    pub(crate) event_id: Uuid,
+}
+
+impl ProjectionCursor {
+    #[must_use]
+    pub(crate) const fn new(created_at: DateTime<Utc>, event_id: Uuid) -> Self {
+        Self {
+            created_at,
+            event_id,
+        }
+    }
+}
+
 pub(crate) async fn fetch_event_rows_for_workspace(
     pool: &PgPool,
     workspace: &str,
@@ -296,6 +167,93 @@ pub(crate) async fn fetch_event_rows_for_workspace(
     .fetch_all(pool)
     .await
     .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_event_rows_after_cursor(
+    pool: &PgPool,
+    cursor: Option<ProjectionCursor>,
+    limit: i64,
+) -> ServerResult<Vec<EventRow>> {
+    if let Some(current_cursor) = cursor {
+        return query_as(
+            "
+            SELECT event_id, workspace, actor, kind, payload, created_at
+            FROM events
+            WHERE created_at > $1
+               OR (created_at = $1 AND event_id > $2)
+            ORDER BY created_at ASC, event_id ASC
+            LIMIT $3
+            ",
+        )
+        .bind(current_cursor.created_at)
+        .bind(current_cursor.event_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into);
+    }
+
+    query_as(
+        "
+        SELECT event_id, workspace, actor, kind, payload, created_at
+        FROM events
+        ORDER BY created_at ASC, event_id ASC
+        LIMIT $1
+        ",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_projection_cursor(
+    pool: &PgPool,
+    projection_name: &str,
+) -> ServerResult<Option<ProjectionCursor>> {
+    let row: Option<ProjectionOffsetRow> = query_as(
+        "
+        SELECT last_event_created_at, last_event_id
+        FROM projection_offsets
+        WHERE projection_name = $1
+        ",
+    )
+    .bind(projection_name)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.and_then(ProjectionOffsetRow::into_cursor))
+}
+
+pub(crate) async fn record_projection_cursor(
+    tx: &mut Transaction<'_, Postgres>,
+    projection_name: &str,
+    cursor: ProjectionCursor,
+    updated_at: DateTime<Utc>,
+) -> ServerResult<()> {
+    sqlx::query(
+        "
+        INSERT INTO projection_offsets (
+            projection_name,
+            last_event_created_at,
+            last_event_id,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (projection_name) DO UPDATE
+        SET last_event_created_at = EXCLUDED.last_event_created_at,
+            last_event_id = EXCLUDED.last_event_id,
+            updated_at = EXCLUDED.updated_at
+        ",
+    )
+    .bind(projection_name)
+    .bind(cursor.created_at)
+    .bind(cursor.event_id)
+    .bind(updated_at)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(())
 }
 
 pub(crate) async fn fetch_epic_rows_for_workspace(
@@ -323,6 +281,17 @@ pub(crate) async fn fetch_epic_by_id(pool: &PgPool, epic_id: Uuid) -> ServerResu
         .ok_or_else(|| ThreadplaneServerError::not_found("epic not found"))
 }
 
+pub(crate) async fn fetch_epic_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<EpicRow>> {
+    query_as(&format!("{EPIC_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn fetch_epic_by_id_tx(
     tx: &mut Transaction<'_, Postgres>,
     epic_id: Uuid,
@@ -344,6 +313,17 @@ pub(crate) async fn fetch_note_by_id(pool: &PgPool, note_id: Uuid) -> ServerResu
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ThreadplaneServerError::not_found("note not found"))
+}
+
+pub(crate) async fn fetch_note_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<NoteRow>> {
+    query_as(&format!("{NOTE_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) async fn fetch_note_by_id_tx(
@@ -369,6 +349,17 @@ pub(crate) async fn fetch_task_by_id(pool: &PgPool, task_id: Uuid) -> ServerResu
         .ok_or_else(|| ThreadplaneServerError::not_found("task not found"))
 }
 
+pub(crate) async fn fetch_task_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<TaskRow>> {
+    query_as(&format!("{TASK_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub(crate) async fn fetch_task_by_id_tx(
     tx: &mut Transaction<'_, Postgres>,
     task_id: Uuid,
@@ -390,7 +381,7 @@ pub(crate) async fn fetch_active_claim(
 ) -> ServerResult<Option<ClaimRow>> {
     query_as(
         "
-        SELECT claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at
+        SELECT claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at, released_at
         FROM task_claims
         WHERE task_id = $1
           AND released_at IS NULL
@@ -405,13 +396,52 @@ pub(crate) async fn fetch_active_claim(
     .map_err(Into::into)
 }
 
+pub(crate) async fn fetch_claim_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<ClaimRow>> {
+    query_as(&format!("{CLAIM_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_link_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<LinkRow>> {
+    query_as(&format!("{LINK_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_task_dependency_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<TaskDependencyRow>> {
+    query_as(
+        "
+        SELECT task_id, depends_on_task_id
+        FROM task_dependencies
+        WHERE event_id = $1
+        ",
+    )
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 pub(crate) async fn fetch_active_claim_tx(
     tx: &mut Transaction<'_, Postgres>,
     task_id: Uuid,
 ) -> ServerResult<Option<ClaimRow>> {
     query_as(
         "
-        SELECT claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at
+        SELECT claim_id, task_id, workspace, actor, event_id, claimed_at, expires_at, released_at
         FROM task_claims
         WHERE task_id = $1
           AND released_at IS NULL
@@ -1006,14 +1036,26 @@ pub(crate) fn parse_event_kind(value: &str) -> EventKind {
     EventKind::from_str(value).unwrap_or(EventKind::NoteRecorded)
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, FromRow, Clone)]
 pub(crate) struct EventRow {
-    event_id: Uuid,
-    workspace: String,
-    actor: String,
-    kind: String,
-    payload: Value,
-    created_at: DateTime<Utc>,
+    pub(crate) event_id: Uuid,
+    pub(crate) workspace: String,
+    pub(crate) actor: String,
+    pub(crate) kind: String,
+    pub(crate) payload: Value,
+    pub(crate) created_at: DateTime<Utc>,
+}
+
+impl EventRow {
+    #[must_use]
+    pub(crate) const fn cursor(&self) -> ProjectionCursor {
+        ProjectionCursor::new(self.created_at, self.event_id)
+    }
+
+    #[must_use]
+    pub(crate) fn parsed_kind(&self) -> EventKind {
+        parse_event_kind(&self.kind)
+    }
 }
 
 #[derive(Debug, FromRow, Clone)]
@@ -1068,6 +1110,43 @@ pub(crate) struct ClaimRow {
     event_id: Uuid,
     claimed_at: DateTime<Utc>,
     pub(crate) expires_at: DateTime<Utc>,
+    #[sqlx(rename = "released_at")]
+    _released_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, FromRow)]
+struct ProjectionOffsetRow {
+    last_event_created_at: Option<DateTime<Utc>>,
+    last_event_id: Option<Uuid>,
+}
+
+impl ProjectionOffsetRow {
+    const fn into_cursor(self) -> Option<ProjectionCursor> {
+        match (self.last_event_created_at, self.last_event_id) {
+            (Some(created_at), Some(event_id)) => Some(ProjectionCursor::new(created_at, event_id)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct LinkRow {
+    pub(crate) link_id: Uuid,
+    event_id: Uuid,
+    workspace: String,
+    actor: String,
+    from_entity_ref: String,
+    to_entity_ref: String,
+    relation: String,
+    is_xanadu: bool,
+    transclusion_id: Option<Uuid>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct TaskDependencyRow {
+    pub(crate) task_id: Uuid,
+    pub(crate) depends_on_task_id: Uuid,
 }
 
 #[derive(Debug, FromRow)]
@@ -1241,6 +1320,24 @@ impl From<ClaimRow> for TaskClaimRecord {
             event_id: value.event_id,
             claimed_at: value.claimed_at.to_rfc3339(),
             expires_at: value.expires_at.to_rfc3339(),
+        }
+    }
+}
+
+impl From<LinkRow> for threadplane_core::LinkRecord {
+    #[inline]
+    fn from(value: LinkRow) -> Self {
+        Self {
+            link_id: value.link_id,
+            event_id: value.event_id,
+            workspace: value.workspace,
+            actor: value.actor,
+            from: value.from_entity_ref,
+            to: value.to_entity_ref,
+            relation: value.relation,
+            is_xanadu: value.is_xanadu,
+            transclusion_id: value.transclusion_id,
+            created_at: value.created_at.to_rfc3339(),
         }
     }
 }

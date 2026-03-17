@@ -21,6 +21,7 @@ use axum::{
 };
 use serde_json::json;
 use snafu::{IntoError as _, Location, Snafu};
+use sqlx::migrate::MigrateError;
 use tracing::error;
 
 pub(crate) type ServerResult<T, E = ThreadplaneServerError> = CoreResult<T, E>;
@@ -92,6 +93,13 @@ pub(crate) enum ThreadplaneServerError {
     #[snafu(display("database operation failed"))]
     Database {
         source: sqlx::Error,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("database migration failed"))]
+    DatabaseMigration {
+        source: MigrateError,
         #[snafu(implicit)]
         location: Location,
     },
@@ -177,6 +185,7 @@ impl ThreadplaneServerError {
             | Self::VerifyNeo4j { location, .. }
             | Self::Serve { location, .. }
             | Self::Database { location, .. }
+            | Self::DatabaseMigration { location, .. }
             | Self::GraphOperation { location, .. }
             | Self::JsonSerialization { location, .. }
             | Self::GraphDecode { location, .. }
@@ -201,6 +210,7 @@ impl ThreadplaneServerError {
             | Self::VerifyNeo4j { .. }
             | Self::Serve { .. }
             | Self::Database { .. }
+            | Self::DatabaseMigration { .. }
             | Self::GraphOperation { .. }
             | Self::JsonSerialization { .. }
             | Self::GraphDecode { .. }
@@ -211,6 +221,7 @@ impl ThreadplaneServerError {
     fn response_message(&self) -> String {
         match self {
             Self::Database { source, .. } => source.to_string(),
+            Self::DatabaseMigration { source, .. } => source.to_string(),
             Self::GraphOperation { source, .. } => source.to_string(),
             Self::JsonSerialization { source, .. } => source.to_string(),
             Self::GraphDecode { source, .. } => source.to_string(),
