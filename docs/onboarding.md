@@ -172,5 +172,6 @@ That script boots the local stack, starts the API server, runs the CLI against i
 ## Common Next Steps
 
 - Read [configuration.md](./configuration.md) to switch config files or override settings.
+- Read [dependencies.md](./dependencies.md) for the crate-version, feature-flag, and MSRV policy.
 - Read [http-api.md](./http-api.md) if you want to drive the service directly over HTTP.
 - Read [architecture.md](./architecture.md) if you want the deeper model behind the POC.

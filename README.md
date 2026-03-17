@@ -10,6 +10,7 @@ Read next:
 
 - [Onboarding guide](./docs/onboarding.md)
 - [Configuration guide](./docs/configuration.md)
+- [Dependency policy](./docs/dependencies.md)
 - [HTTP API reference](./docs/http-api.md)
 
 ## Why It Matters
