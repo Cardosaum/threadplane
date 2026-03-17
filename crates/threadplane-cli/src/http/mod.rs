@@ -15,6 +15,30 @@ use crate::error::{HttpClientBuild, Result};
 use request::JsonRequest;
 use transport::ServerTransport;
 
+macro_rules! define_json_mutation {
+    ($fn_name:ident, $method:expr) => {
+        pub(crate) fn $fn_name<B, T>(
+            client: &Client,
+            server: &str,
+            path: &str,
+            body: &B,
+            idempotency_key: Option<&str>,
+        ) -> Result<T>
+        where
+            B: Serialize,
+            T: DeserializeOwned,
+        {
+            send_json(
+                client,
+                server,
+                &JsonRequest::<B, T>::new($method, path)
+                    .with_body(body)
+                    .with_idempotency_key(idempotency_key),
+            )
+        }
+    };
+}
+
 pub(crate) fn build_http_client() -> Result<Client> {
     Client::builder().build().context(HttpClientBuild)
 }
@@ -26,65 +50,9 @@ where
     send_json(client, server, &JsonRequest::<(), T>::new(Method::GET, path))
 }
 
-pub(crate) fn patch_json<B, T>(
-    client: &Client,
-    server: &str,
-    path: &str,
-    body: &B,
-    idempotency_key: Option<&str>,
-) -> Result<T>
-where
-    B: Serialize,
-    T: DeserializeOwned,
-{
-    send_json(
-        client,
-        server,
-        &JsonRequest::<B, T>::new(Method::PATCH, path)
-            .with_body(body)
-            .with_idempotency_key(idempotency_key),
-    )
-}
-
-pub(crate) fn post_json<B, T>(
-    client: &Client,
-    server: &str,
-    path: &str,
-    body: &B,
-    idempotency_key: Option<&str>,
-) -> Result<T>
-where
-    B: Serialize,
-    T: DeserializeOwned,
-{
-    send_json(
-        client,
-        server,
-        &JsonRequest::<B, T>::new(Method::POST, path)
-            .with_body(body)
-            .with_idempotency_key(idempotency_key),
-    )
-}
-
-pub(crate) fn put_json<B, T>(
-    client: &Client,
-    server: &str,
-    path: &str,
-    body: &B,
-    idempotency_key: Option<&str>,
-) -> Result<T>
-where
-    B: Serialize,
-    T: DeserializeOwned,
-{
-    send_json(
-        client,
-        server,
-        &JsonRequest::<B, T>::new(Method::PUT, path)
-            .with_body(body)
-            .with_idempotency_key(idempotency_key),
-    )
-}
+define_json_mutation!(patch_json, Method::PATCH);
+define_json_mutation!(post_json, Method::POST);
+define_json_mutation!(put_json, Method::PUT);
 
 fn send_json<Body, ResponseType>(
     client: &Client,

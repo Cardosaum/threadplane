@@ -51,12 +51,18 @@ mod tests {
     use super::{JsonRequest, RequestMetadata};
     use crate::http::{target::RequestTarget, transport::ServerTransport};
 
+    macro_rules! patch_request {
+        ($body:expr) => {{
+            JsonRequest::<_, serde_json::Value>::new(Method::PATCH, "/v1/tasks/123")
+                .with_body(&$body)
+                .with_idempotency_key(Some("command-1"))
+        }};
+    }
+
     #[test]
     fn json_request_keeps_optional_body_and_metadata() {
         let body = serde_json::json!({"title":"test"});
-        let request = JsonRequest::<_, serde_json::Value>::new(Method::PATCH, "/v1/tasks/123")
-            .with_body(&body)
-            .with_idempotency_key(Some("command-1"));
+        let request = patch_request!(body);
 
         assert!(request.body.is_some());
         assert_eq!(request.metadata.idempotency_key, Some("command-1"));
@@ -66,9 +72,7 @@ mod tests {
     #[test]
     fn request_builder_preserves_method_and_idempotency_metadata() {
         let body = serde_json::json!({"title":"test"});
-        let request = JsonRequest::<_, serde_json::Value>::new(Method::PATCH, "/v1/tasks/123")
-            .with_body(&body)
-            .with_idempotency_key(Some("command-1"));
+        let request = patch_request!(body);
         let client = Client::builder()
             .build()
             .unwrap_or_else(|error| panic!("client should build: {error}"));
