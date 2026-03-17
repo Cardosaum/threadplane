@@ -53,6 +53,21 @@ pub struct BuildInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildFieldDifference {
+    pub client: String,
+    pub field: String,
+    pub server: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuildComparison {
+    pub client: BuildInfo,
+    pub differences: Vec<BuildFieldDifference>,
+    pub matches: bool,
+    pub server: BuildInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceSnapshot {
     pub build: BuildInfo,
     pub event_kinds: Vec<EventKind>,
@@ -358,6 +373,64 @@ pub fn health_summary(build: &BuildInfo) -> Value {
         "service": SERVICE_NAME,
         "build": build,
     })
+}
+
+#[inline]
+#[must_use]
+pub fn compare_build_info(client: &BuildInfo, server: &BuildInfo) -> BuildComparison {
+    let mut differences = Vec::new();
+
+    push_build_difference(
+        &mut differences,
+        "version",
+        &client.version,
+        &server.version,
+    );
+    push_build_difference(
+        &mut differences,
+        "build_profile",
+        &client.build_profile,
+        &server.build_profile,
+    );
+    push_build_difference(
+        &mut differences,
+        "git_commit",
+        client.git_commit.as_deref().unwrap_or("unknown"),
+        server.git_commit.as_deref().unwrap_or("unknown"),
+    );
+    push_build_difference(
+        &mut differences,
+        "git_dirty",
+        if client.git_dirty { "true" } else { "false" },
+        if server.git_dirty { "true" } else { "false" },
+    );
+
+    let matches = differences.is_empty();
+
+    BuildComparison {
+        client: client.clone(),
+        differences,
+        matches,
+        server: server.clone(),
+    }
+}
+
+#[inline]
+fn push_build_difference(
+    differences: &mut Vec<BuildFieldDifference>,
+    field: &str,
+    client: &str,
+    server: &str,
+) {
+    if client == server {
+        return;
+    }
+
+    differences.push(BuildFieldDifference {
+        client: client.to_owned(),
+        field: field.to_owned(),
+        server: server.to_owned(),
+    });
 }
 
 #[inline]

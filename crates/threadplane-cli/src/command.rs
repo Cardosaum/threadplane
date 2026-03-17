@@ -13,13 +13,15 @@ use snafu::ResultExt as _;
 use uuid::Uuid;
 
 use threadplane_core::{
-    default_config_path, default_system_config_path, AddLinkRequest, AddTaskDependencyRequest,
-    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, OfferTaskRequest, ReleaseTaskRequest, ThreadplaneConfig,
-    UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
+    compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
+    AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
+    ReleaseTaskRequest, ServiceSnapshot, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
+    SERVICE_NAME,
 };
 
 use crate::{
+    build_info::current_build_info,
     error::{JsonRender, Result},
     http::{get_json, post_json},
 };
@@ -50,6 +52,7 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Build(BuildCommand),
     Config(ConfigCommand),
     Epic(EpicCommand),
     Events(EventsCommand),
@@ -58,6 +61,21 @@ enum Command {
     #[command(about = "Show the product and architecture summary exposed by the service")]
     Scope,
     Task(TaskCommand),
+}
+
+#[derive(Debug, Args)]
+#[command(about = "Inspect and compare CLI/server build identity")]
+struct BuildCommand {
+    #[command(subcommand)]
+    command: BuildSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum BuildSubcommand {
+    #[command(about = "Compare the local CLI build with the running server build")]
+    Compare,
+    #[command(about = "Show the local threadplane-cli build identity")]
+    Show,
 }
 
 #[derive(Debug, Args)]
@@ -423,16 +441,28 @@ pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> 
     let server = cli.server.unwrap_or_else(|| config.cli.url.clone());
 
     match cli.command {
+        Command::Build(command) => handle_build(client, &server, &command)?,
         Command::Config(command) => handle_config(&command, config)?,
         Command::Epic(command) => handle_epic(client, &server, command)?,
         Command::Events(command) => handle_events(client, &server, command)?,
         Command::Link(command) => handle_link(client, &server, command)?,
         Command::Note(command) => handle_note(client, &server, command)?,
-        Command::Scope => print_value(&get_json::<serde_json::Value>(client, &server, "/scope")?)?,
+        Command::Scope => handle_scope(client, &server)?,
         Command::Task(command) => handle_task(client, &server, command)?,
     }
 
     Ok(())
+}
+
+fn handle_build(client: &Client, server: &str, command: &BuildCommand) -> Result<()> {
+    match command.command {
+        BuildSubcommand::Show => print_value(&current_build_info()),
+        BuildSubcommand::Compare => {
+            let snapshot: ServiceSnapshot = get_json(client, server, "/")?;
+            let comparison = compare_build_info(&current_build_info(), &snapshot.build);
+            print_value(&comparison)
+        }
+    }
 }
 
 fn handle_epic(client: &Client, server: &str, command: EpicCommand) -> Result<()> {
@@ -500,6 +530,18 @@ fn handle_events(client: &Client, server: &str, command: EventsCommand) -> Resul
             print_value(&response)
         }
     }
+}
+
+fn handle_scope(client: &Client, server: &str) -> Result<()> {
+    let scope: serde_json::Value = get_json(client, server, "/scope")?;
+    let snapshot: ServiceSnapshot = get_json(client, server, "/")?;
+    let comparison = compare_build_info(&current_build_info(), &snapshot.build);
+
+    if let Some(warning) = build_mismatch_warning(&comparison) {
+        eprintln!("warning: {warning}");
+    }
+
+    print_value(&scope)
 }
 
 fn handle_link(client: &Client, server: &str, command: LinkCommand) -> Result<()> {
@@ -669,4 +711,26 @@ fn print_value<T: Serialize>(value: &T) -> Result<()> {
     let rendered = to_string_pretty(value).context(JsonRender)?;
     println!("{rendered}");
     Ok(())
+}
+
+pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<String> {
+    if comparison.matches {
+        return None;
+    }
+
+    let changed_fields = comparison
+        .differences
+        .iter()
+        .map(|difference| difference.field.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Some(format!(
+        "threadplane-cli {} ({}) differs from server {} ({}); changed fields: {}. Run `threadplane build compare` for details.",
+        comparison.client.version,
+        comparison.client.git_commit.as_deref().unwrap_or("unknown"),
+        comparison.server.version,
+        comparison.server.git_commit.as_deref().unwrap_or("unknown"),
+        changed_fields,
+    ))
 }

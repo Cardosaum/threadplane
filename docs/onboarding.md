@@ -38,9 +38,11 @@ cargo run -p threadplane-cli -- config show
 
 ```bash
 cargo run -p threadplane-cli -- scope
+cargo run -p threadplane-cli -- build compare
 ```
 
 The scope payload includes the running server build metadata, including dirty-worktree state, which is useful when you are dogfooding locally and want to catch stale or misleading background processes quickly.
+If the CLI and server were built from different commits or worktree states, `scope` warns on stderr and `build compare` prints the full comparison payload.
 
 For repeated local development, you can also use the dogfooding bootstrap flow:
 

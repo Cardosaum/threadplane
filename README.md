@@ -74,9 +74,11 @@ cargo run -p threadplane-server
 ```bash
 cargo run -p threadplane-cli -- scope
 cargo run -p threadplane-cli -- config show
+cargo run -p threadplane-cli -- build compare
 ```
 
 `scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
+If the local CLI build and running server build drift apart, `scope` prints a warning on stderr and `build compare` shows the full typed diff.
 
 5. Run the full smoke test if you want the fastest proof that everything works:
 
@@ -187,6 +189,8 @@ cargo run -p threadplane-cli -- task context --task-id <task-id>
 Current commands:
 
 - `scope`
+- `build show`
+- `build compare`
 - `epic add`
 - `epic list`
 - `epic show`

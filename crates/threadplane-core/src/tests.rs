@@ -4,9 +4,9 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::{
-    build_info, default_config_path, default_system_config_path, epic_entity_ref, note_entity_ref,
-    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref, EntityRef,
-    EventKind, ThreadplaneConfig,
+    build_info, compare_build_info, default_config_path, default_system_config_path,
+    epic_entity_ref, note_entity_ref, parse_entity_ref, relation_type, scope_summary,
+    service_snapshot, task_entity_ref, EntityRef, EventKind, ThreadplaneConfig,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -124,6 +124,35 @@ fn scope_summary_embeds_build_identity() {
         build_object.and_then(|value| value.get("git_dirty")),
         Some(&serde_json::Value::from(true))
     );
+}
+
+#[test]
+fn compare_build_info_reports_field_differences() {
+    let client = build_info(
+        "threadplane-cli",
+        "0.1.0",
+        "debug",
+        Some("aaaaaaaaaaaa"),
+        true,
+    );
+    let server = build_info(
+        "threadplane-server",
+        "0.1.1",
+        "release",
+        Some("bbbbbbbbbbbb"),
+        false,
+    );
+
+    let comparison = compare_build_info(&client, &server);
+    let fields = comparison
+        .differences
+        .iter()
+        .map(|difference| difference.field.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(!comparison.matches);
+    assert_eq!(comparison.differences.len(), 4);
+    assert_eq!(fields, vec!["version", "build_profile", "git_commit", "git_dirty"]);
 }
 
 #[test]
