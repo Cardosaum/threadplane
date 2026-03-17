@@ -41,13 +41,12 @@ use crate::{
     },
 };
 use threadplane_core::{
-    health_summary, normalize_task_labels, normalize_task_owner, scope_summary,
-    service_snapshot, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimTaskRequest,
-    CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest,
-    EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord, OfferTaskRequest,
-    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
-    TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest,
-    DEPENDS_ON_RELATION, XANADU_RELATION,
+    health_summary, normalize_task_labels, normalize_task_owner, scope_summary, service_snapshot,
+    AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimTaskRequest, CompleteTaskRequest,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EpicRecord, EventKind,
+    EventRecord, LinkRecord, NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
+    ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskListEntry, TaskPriority,
+    TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -74,10 +73,7 @@ fn with_projection_status(
     projection: ProjectionStatus,
 ) -> Result<Value, serde_json::Error> {
     if let Value::Object(ref mut object) = payload {
-        object.insert(
-            "projection".to_owned(),
-            serde_json::to_value(projection)?,
-        );
+        object.insert("projection".to_owned(), serde_json::to_value(projection)?);
     }
 
     Ok(payload)
@@ -200,12 +196,10 @@ async fn ensure_task_is_unclaimed(
 
 async fn project_task_record(state: &AppState, record: &TaskRecord) -> ServerResult<()> {
     project_task_supporting_entities(state, record).await?;
-    project_task(state.graph(), record)
-        .await
-        .map_err(|error| {
-            error!(?error, task_id = %record.task_id, "failed to project task");
-            ThreadplaneServerError::internal(error)
-        })
+    project_task(state.graph(), record).await.map_err(|error| {
+        error!(?error, task_id = %record.task_id, "failed to project task");
+        ThreadplaneServerError::internal(error)
+    })
 }
 
 async fn project_claimed_task_record(
@@ -269,7 +263,9 @@ pub(crate) async fn scope(State(state): State<AppState>) -> ServerResult<Json<Va
     )?))
 }
 
-pub(crate) async fn projection_status(State(state): State<AppState>) -> AppResult<ProjectionStatus> {
+pub(crate) async fn projection_status(
+    State(state): State<AppState>,
+) -> AppResult<ProjectionStatus> {
     let data = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
     Ok(success(data))
 }
@@ -338,8 +334,7 @@ pub(crate) async fn create_epic(
     .await?;
     let record = EpicRecord::from(fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?);
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     state
         .serialize_graph_projection(async {
@@ -425,17 +420,14 @@ pub(crate) async fn create_note(
     .await?;
     let record = NoteRecord::from(fetch_note_by_id_tx(&mut tx, note_id, &request.workspace).await?);
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     state
         .serialize_graph_projection(async {
-            project_note(state.graph(), &record)
-                .await
-                .map_err(|error| {
-                    error!(?error, note_id = %record.note_id, "failed to project note");
-                    ThreadplaneServerError::internal(error)
-                })
+            project_note(state.graph(), &record).await.map_err(|error| {
+                error!(?error, note_id = %record.note_id, "failed to project note");
+                ThreadplaneServerError::internal(error)
+            })
         })
         .await?;
 
@@ -519,10 +511,10 @@ pub(crate) async fn update_note(
         .await?;
         None
     };
-    let record = NoteRecord::from(fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?);
+    let record =
+        NoteRecord::from(fetch_note_by_id_tx(&mut tx, request.note_id, &request.workspace).await?);
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
     state
@@ -632,8 +624,7 @@ pub(crate) async fn offer_task(
     }
     let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, task_id, &request.workspace).await?);
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     state
         .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
@@ -687,10 +678,10 @@ pub(crate) async fn update_task(
 
     let transclusion_id =
         persist_task_update(&mut tx, &request, task.transclusion_id, updated_at).await?;
-    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let record =
+        TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
     state
@@ -794,8 +785,7 @@ pub(crate) async fn claim_task(
         expires_at: expires_at.to_rfc3339(),
     };
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, claimed_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, claimed_at).await?;
     let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
@@ -885,7 +875,8 @@ pub(crate) async fn release_task(
     .bind(released_at)
     .execute(&mut *tx)
     .await?;
-    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let record =
+        TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, released_at)
             .await?;
@@ -969,7 +960,8 @@ pub(crate) async fn complete_task(
     .bind(completed_at)
     .execute(&mut *tx)
     .await?;
-    let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
+    let record =
+        TaskRecord::from(fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?);
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, completed_at)
             .await?;
@@ -1120,18 +1112,15 @@ pub(crate) async fn add_link(
         created_at: created_at.to_rfc3339(),
     };
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
     state
         .serialize_graph_projection(async {
-            project_link(state.graph(), &record)
-                .await
-                .map_err(|error| {
-                    error!(?error, link_id = %record.link_id, "failed to project link");
-                    ThreadplaneServerError::internal(error)
-                })
+            project_link(state.graph(), &record).await.map_err(|error| {
+                error!(?error, link_id = %record.link_id, "failed to project link");
+                ThreadplaneServerError::internal(error)
+            })
         })
         .await?;
 
@@ -1223,8 +1212,7 @@ pub(crate) async fn add_xanadu_link(
         created_at: created_at.to_rfc3339(),
     };
     let receipt =
-        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
-            .await?;
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
     state
@@ -1279,10 +1267,10 @@ pub(crate) async fn list_tasks(
             ready_only: query.ready_only.unwrap_or(false),
             status: query.status.as_deref(),
         },
+        Some(limit),
     )
     .await?;
-    let limited_rows = truncate_results(rows, limit);
-    let data = build_task_list_entries(state.pool(), limited_rows).await?;
+    let data = build_task_list_entries(state.pool(), rows).await?;
     Ok(success(data))
 }
 
@@ -1298,6 +1286,7 @@ pub(crate) async fn list_open_tasks(
             status: Some("open"),
             ..TaskListFilters::default()
         },
+        None,
     )
     .await?;
     let data = build_task_list_entries(state.pool(), rows).await?;
@@ -1360,10 +1349,4 @@ pub(crate) async fn task_dag(
 #[must_use]
 pub(crate) fn normalized_list_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT)
-}
-
-fn truncate_results<T>(items: Vec<T>, limit: i64) -> Vec<T> {
-    let max_items = usize::try_from(limit).map_or(usize::MAX, |value| value);
-
-    items.into_iter().take(max_items).collect()
 }

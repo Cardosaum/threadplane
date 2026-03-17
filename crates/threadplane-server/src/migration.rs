@@ -3,8 +3,8 @@
     reason = "Migration helpers are crate-local bootstrap building blocks."
 )]
 
-use sqlx::{migrate::Migrator, PgPool};
 use snafu::ResultExt as _;
+use sqlx::{migrate::Migrator, PgPool};
 use std::path::Path;
 
 use crate::error::{DatabaseMigration, ServerResult};
@@ -17,6 +17,9 @@ pub(crate) const PROJECTION_OFFSETS_MIGRATION_SQL: &str =
 #[cfg(test)]
 pub(crate) const COMMAND_RECEIPTS_MIGRATION_SQL: &str =
     include_str!("../migrations/0003_command_receipts.sql");
+#[cfg(test)]
+pub(crate) const PERFORMANCE_INDEXES_MIGRATION_SQL: &str =
+    include_str!("../migrations/0004_performance_indexes.sql");
 const MIGRATIONS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
 
 pub(crate) async fn run_migrations(pool: &PgPool) -> ServerResult<()> {

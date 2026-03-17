@@ -7,6 +7,7 @@
     reason = "Persistence helpers are shared only inside this crate."
 )]
 
+use alloc::collections::BTreeMap;
 use core::str::FromStr as _;
 
 use chrono::{DateTime, Utc};
@@ -290,7 +291,9 @@ pub(crate) async fn fetch_epic_rows_for_workspace(
 }
 
 async fn count_all_events(pool: &PgPool) -> ServerResult<i64> {
-    let (count,): (i64,) = query_as("SELECT COUNT(*) FROM events").fetch_one(pool).await?;
+    let (count,): (i64,) = query_as("SELECT COUNT(*) FROM events")
+        .fetch_one(pool)
+        .await?;
     Ok(count)
 }
 
@@ -678,6 +681,7 @@ pub(crate) async fn fetch_tasks_for_listing(
     pool: &PgPool,
     workspace: &str,
     filters: TaskListFilters<'_>,
+    limit: Option<i64>,
 ) -> ServerResult<Vec<TaskRow>> {
     if let Some(filter_value) = filters.status {
         if !matches!(filter_value, "open" | "claimed" | "completed") {
@@ -685,6 +689,9 @@ pub(crate) async fn fetch_tasks_for_listing(
                 "unsupported task status filter {filter_value}"
             )));
         }
+    }
+    if filters.ready_only && matches!(filters.status, Some("claimed" | "completed")) {
+        return Ok(Vec::new());
     }
 
     let normalized_owner = normalize_task_owner(filters.owner.map(str::to_owned));
@@ -713,26 +720,48 @@ pub(crate) async fn fetch_tasks_for_listing(
         query.push_bind(selected_owner);
     }
     if let Some(selected_label) = normalized_label {
-        query.push(" AND ");
+        query.push(" AND labels @> ARRAY[");
         query.push_bind(selected_label);
-        query.push(" = ANY(labels)");
+        query.push("]::text[]");
     }
-
-    query.push(" ORDER BY created_at DESC");
+    if filters.ready_only {
+        if filters.status.is_none() {
+            query.push(" AND status = 'open'");
+        }
+        query.push(
+            "
+            AND NOT EXISTS (
+                SELECT 1
+                FROM task_dependencies td
+                JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+                WHERE td.task_id = tasks.task_id
+                  AND dependency.status <> 'completed'
+            )
+            ",
+        );
+        query.push(
+            "
+            ORDER BY
+                CASE priority
+                    WHEN 'urgent' THEN 3
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 1
+                    WHEN 'low' THEN 0
+                    ELSE 1
+                END DESC,
+                updated_at DESC,
+                created_at DESC
+            ",
+        );
+    } else {
+        query.push(" ORDER BY created_at DESC");
+    }
+    if let Some(query_limit) = limit {
+        query.push(" LIMIT ");
+        query.push_bind(query_limit);
+    }
 
     let rows = query.build_query_as::<TaskRow>().fetch_all(pool).await?;
-
-    if filters.ready_only {
-        let mut ready_rows = Vec::new();
-        for row in rows {
-            if task_is_ready(pool, row.task_id).await? {
-                ready_rows.push(row);
-            }
-        }
-        sort_task_rows_for_queue(&mut ready_rows);
-        return Ok(ready_rows);
-    }
-
     Ok(rows)
 }
 
@@ -740,27 +769,196 @@ pub(crate) async fn build_task_list_entries(
     pool: &PgPool,
     tasks: Vec<TaskRow>,
 ) -> ServerResult<Vec<TaskListEntry>> {
+    let task_ids: Vec<Uuid> = tasks.iter().map(|task| task.task_id).collect();
+    let mut active_claims = fetch_active_claims_for_tasks(pool, &task_ids).await?;
+    let mut dependencies = fetch_direct_dependencies_for_tasks(pool, &task_ids).await?;
+    let mut dependents = fetch_direct_dependents_for_tasks(pool, &task_ids).await?;
+    let mut epics = fetch_epics_for_tasks(pool, &tasks).await?;
+    let ready_states = fetch_ready_states_for_tasks(pool, &task_ids).await?;
     let mut entries = Vec::with_capacity(tasks.len());
     for task in tasks {
-        entries.push(build_task_list_entry(pool, task).await?);
+        let task_id = task.task_id;
+        let epic_id = task.epic_id;
+        entries.push(TaskListEntry {
+            active_claim: active_claims.remove(&task_id),
+            dependencies: dependencies.remove(&task_id).unwrap_or_default(),
+            dependents: dependents.remove(&task_id).unwrap_or_default(),
+            epic: epic_id.and_then(|value| epics.remove(&value)),
+            ready: ready_states.get(&task_id).copied().unwrap_or(false),
+            task: task.into(),
+        });
     }
     Ok(entries)
 }
 
-pub(crate) async fn build_task_list_entry(
+async fn fetch_active_claims_for_tasks(
     pool: &PgPool,
-    task: TaskRow,
-) -> ServerResult<TaskListEntry> {
-    Ok(TaskListEntry {
-        active_claim: fetch_active_claim(pool, task.task_id)
-            .await?
-            .map(TaskClaimRecord::from),
-        dependencies: fetch_direct_dependencies(pool, task.task_id).await?,
-        dependents: fetch_direct_dependents(pool, task.task_id).await?,
-        epic: fetch_epic_for_task(pool, &task).await?,
-        ready: task_is_ready(pool, task.task_id).await?,
-        task: task.into(),
-    })
+    task_ids: &[Uuid],
+) -> ServerResult<BTreeMap<Uuid, TaskClaimRecord>> {
+    if task_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let rows: Vec<ClaimRow> = query_as(
+        "
+        SELECT DISTINCT ON (task_id)
+            claim_id,
+            task_id,
+            workspace,
+            actor,
+            event_id,
+            claimed_at,
+            expires_at,
+            released_at
+        FROM task_claims
+        WHERE task_id = ANY($1)
+          AND released_at IS NULL
+          AND expires_at > now()
+        ORDER BY task_id, claimed_at DESC
+        ",
+    )
+    .bind(task_ids)
+    .fetch_all(pool)
+    .await?;
+
+    let mut claims = BTreeMap::new();
+    for row in rows {
+        claims.insert(row.task_id, row.into());
+    }
+    Ok(claims)
+}
+
+async fn fetch_dependency_rows_for_tasks(
+    pool: &PgPool,
+    task_ids: &[Uuid],
+    reverse: bool,
+) -> ServerResult<BTreeMap<Uuid, Vec<TaskDependencySummary>>> {
+    if task_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let sql = if reverse {
+        "
+        SELECT
+            td.depends_on_task_id AS source_task_id,
+            t.task_id AS dependency_id,
+            t.title,
+            t.status
+        FROM task_dependencies td
+        JOIN tasks t ON t.task_id = td.task_id
+        WHERE td.depends_on_task_id = ANY($1)
+        ORDER BY td.depends_on_task_id, t.created_at DESC
+        "
+    } else {
+        "
+        SELECT
+            td.task_id AS source_task_id,
+            t.task_id AS dependency_id,
+            t.title,
+            t.status
+        FROM task_dependencies td
+        JOIN tasks t ON t.task_id = td.depends_on_task_id
+        WHERE td.task_id = ANY($1)
+        ORDER BY td.task_id, t.created_at DESC
+        "
+    };
+
+    let rows: Vec<TaskDependencyListRow> = query_as(sql).bind(task_ids).fetch_all(pool).await?;
+    let mut dependencies = BTreeMap::new();
+    for row in rows {
+        dependencies
+            .entry(row.source_task_id)
+            .or_insert_with(Vec::new)
+            .push(TaskDependencySummary {
+                depth: 1,
+                entity_ref: task_entity_ref(row.dependency_id),
+                status: row.status,
+                task_id: row.dependency_id,
+                title: row.title,
+            });
+    }
+
+    Ok(dependencies)
+}
+
+async fn fetch_direct_dependencies_for_tasks(
+    pool: &PgPool,
+    task_ids: &[Uuid],
+) -> ServerResult<BTreeMap<Uuid, Vec<TaskDependencySummary>>> {
+    fetch_dependency_rows_for_tasks(pool, task_ids, false).await
+}
+
+async fn fetch_direct_dependents_for_tasks(
+    pool: &PgPool,
+    task_ids: &[Uuid],
+) -> ServerResult<BTreeMap<Uuid, Vec<TaskDependencySummary>>> {
+    fetch_dependency_rows_for_tasks(pool, task_ids, true).await
+}
+
+async fn fetch_epics_for_tasks(
+    pool: &PgPool,
+    tasks: &[TaskRow],
+) -> ServerResult<BTreeMap<Uuid, EpicRecord>> {
+    let mut epic_ids = Vec::new();
+    for task in tasks {
+        if let Some(epic_id) = task.epic_id {
+            if !epic_ids.contains(&epic_id) {
+                epic_ids.push(epic_id);
+            }
+        }
+    }
+    if epic_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let rows: Vec<EpicRow> = query_as(&format!("{EPIC_SELECT} WHERE epic_id = ANY($1)"))
+        .bind(epic_ids)
+        .fetch_all(pool)
+        .await?;
+
+    let mut epics = BTreeMap::new();
+    for row in rows {
+        epics.insert(row.epic_id, row.into());
+    }
+    Ok(epics)
+}
+
+async fn fetch_ready_states_for_tasks(
+    pool: &PgPool,
+    task_ids: &[Uuid],
+) -> ServerResult<BTreeMap<Uuid, bool>> {
+    if task_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let rows: Vec<TaskReadyRow> = query_as(
+        "
+        SELECT
+            t.task_id,
+            CASE
+                WHEN t.status <> 'open' THEN false
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM task_dependencies td
+                    JOIN tasks dependency ON dependency.task_id = td.depends_on_task_id
+                    WHERE td.task_id = t.task_id
+                      AND dependency.status <> 'completed'
+                ) THEN false
+                ELSE true
+            END AS ready
+        FROM tasks t
+        WHERE t.task_id = ANY($1)
+        ",
+    )
+    .bind(task_ids)
+    .fetch_all(pool)
+    .await?;
+
+    let mut ready_states = BTreeMap::new();
+    for row in rows {
+        ready_states.insert(row.task_id, row.ready);
+    }
+    Ok(ready_states)
 }
 
 pub(crate) async fn fetch_direct_dependencies(
@@ -1219,6 +1417,20 @@ pub(crate) struct TaskDependencyRow {
 }
 
 #[derive(Debug, FromRow)]
+struct TaskDependencyListRow {
+    dependency_id: Uuid,
+    source_task_id: Uuid,
+    status: String,
+    title: String,
+}
+
+#[derive(Debug, FromRow)]
+struct TaskReadyRow {
+    ready: bool,
+    task_id: Uuid,
+}
+
+#[derive(Debug, FromRow)]
 struct TransclusionGroupRow {
     title: String,
     content: String,
@@ -1357,18 +1569,7 @@ fn parse_task_priority(value: &str) -> TaskPriority {
     value.parse().unwrap_or_default()
 }
 
-fn sort_task_rows_for_queue(rows: &mut [TaskRow]) {
-    rows.sort_by(|left, right| {
-        let left_priority = task_priority_rank(parse_task_priority(&left.priority));
-        let right_priority = task_priority_rank(parse_task_priority(&right.priority));
-
-        right_priority
-            .cmp(&left_priority)
-            .then_with(|| right.updated_at.cmp(&left.updated_at))
-            .then_with(|| right.created_at.cmp(&left.created_at))
-    });
-}
-
+#[cfg(test)]
 pub(crate) const fn task_priority_rank(priority: TaskPriority) -> u8 {
     match priority {
         TaskPriority::Low => 0,

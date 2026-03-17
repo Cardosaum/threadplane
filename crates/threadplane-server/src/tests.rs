@@ -18,7 +18,8 @@ use crate::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
     migration::{
-        COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL,
+        COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, PERFORMANCE_INDEXES_MIGRATION_SQL,
+        PROJECTION_OFFSETS_MIGRATION_SQL,
     },
     projections::deduplicate_graph_relations,
     storage::{
@@ -128,10 +129,25 @@ fn projection_offsets_migration_covers_replay_cursor_storage(#[case] expected_fr
 #[case("request_payload JSONB NOT NULL")]
 #[case("response_payload JSONB")]
 #[case("UNIQUE (workspace, actor, command_kind, idempotency_key)")]
-fn command_receipts_migration_covers_idempotent_command_storage(
-    #[case] expected_fragment: &str,
-) {
+fn command_receipts_migration_covers_idempotent_command_storage(#[case] expected_fragment: &str) {
     let has_fragment = COMMAND_RECEIPTS_MIGRATION_SQL.contains(expected_fragment);
+    assert!(
+        has_fragment,
+        "missing migration fragment: {expected_fragment}"
+    );
+}
+
+#[rstest]
+#[case("CREATE INDEX IF NOT EXISTS idx_events_created_at_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_epics_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_notes_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_tasks_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_task_claims_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_links_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_task_dependencies_event_id")]
+#[case("CREATE INDEX IF NOT EXISTS idx_task_claims_active_task_claimed_at")]
+fn performance_indexes_migration_covers_replay_and_claim_lookups(#[case] expected_fragment: &str) {
+    let has_fragment = PERFORMANCE_INDEXES_MIGRATION_SQL.contains(expected_fragment);
     assert!(
         has_fragment,
         "missing migration fragment: {expected_fragment}"
