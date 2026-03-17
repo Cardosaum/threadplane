@@ -24,16 +24,33 @@ use alloc::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::scenario::{OperationKind, OperationSample, ScenarioKind};
+use threadplane_core::BuildInfo;
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct BenchmarkReport {
+    pub(crate) captured_at: String,
+    pub(crate) client_build: BuildInfo,
     pub(crate) concurrency: usize,
     pub(crate) failed_operations: usize,
     pub(crate) operation_breakdown: Vec<OperationBreakdown>,
     pub(crate) operations: usize,
     pub(crate) scenario: ScenarioKind,
+    pub(crate) server_build: Option<BuildInfo>,
+    pub(crate) server_url: String,
     pub(crate) successful_operations: usize,
     pub(crate) throughput_ops_per_second: f64,
+    pub(crate) total_duration_ms: f64,
+    pub(crate) workspace: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BenchmarkReportContext {
+    pub(crate) captured_at: String,
+    pub(crate) client_build: BuildInfo,
+    pub(crate) concurrency: usize,
+    pub(crate) scenario: ScenarioKind,
+    pub(crate) server_build: Option<BuildInfo>,
+    pub(crate) server_url: String,
     pub(crate) total_duration_ms: f64,
     pub(crate) workspace: String,
 }
@@ -56,41 +73,39 @@ pub(crate) struct OperationBreakdown {
 }
 
 pub(crate) fn build_report(
-    workspace: &str,
-    scenario: ScenarioKind,
-    concurrency: usize,
-    total_duration_ms: f64,
+    context: BenchmarkReportContext,
     samples: Vec<OperationSample>,
 ) -> BenchmarkReport {
     let operations = samples.len();
     let successful_operations = samples.iter().filter(|sample| sample.succeeded).count();
     let failed_operations = operations.saturating_sub(successful_operations);
-    let throughput_ops_per_second = if total_duration_ms > 0.0_f64 {
-        (operations as f64) / (total_duration_ms / 1_000.0_f64)
+    let throughput_ops_per_second = if context.total_duration_ms > 0.0_f64 {
+        (operations as f64) / (context.total_duration_ms / 1_000.0_f64)
     } else {
         0.0_f64
     };
 
     BenchmarkReport {
-        concurrency,
+        captured_at: context.captured_at,
+        client_build: context.client_build,
+        concurrency: context.concurrency,
         failed_operations,
         operation_breakdown: build_operation_breakdown(samples),
         operations,
-        scenario,
+        scenario: context.scenario,
+        server_build: context.server_build,
+        server_url: context.server_url,
         successful_operations,
         throughput_ops_per_second,
-        total_duration_ms,
-        workspace: workspace.to_owned(),
+        total_duration_ms: context.total_duration_ms,
+        workspace: context.workspace,
     }
 }
 
 fn build_operation_breakdown(samples: Vec<OperationSample>) -> Vec<OperationBreakdown> {
     let mut grouped_samples: BTreeMap<OperationKind, Vec<OperationSample>> = BTreeMap::new();
     for sample in samples {
-        grouped_samples
-            .entry(sample.kind)
-            .or_default()
-            .push(sample);
+        grouped_samples.entry(sample.kind).or_default().push(sample);
     }
 
     let mut breakdown = Vec::with_capacity(grouped_samples.len());

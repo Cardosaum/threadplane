@@ -1,6 +1,7 @@
 extern crate alloc;
 
 mod app;
+mod build_info;
 mod command;
 mod error;
 mod report;

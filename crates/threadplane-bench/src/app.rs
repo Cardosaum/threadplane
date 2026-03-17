@@ -3,18 +3,20 @@
     reason = "Benchmark app wiring is crate-local orchestration."
 )]
 
+use chrono::Utc;
 use std::{env, time::Instant};
 
 use clap::Parser as _;
 use reqwest::blocking::Client;
 use snafu::ResultExt as _;
 
-use threadplane_core::load_threadplane_config;
+use threadplane_core::{load_threadplane_config, BuildInfo, ServiceSnapshot};
 
 use crate::{
+    build_info::current_build_info,
     command::{Cli, Command, ScenarioKind as CommandScenarioKind},
     error::{ConfigLoad, HttpClientBuild, JsonRender, Result},
-    report::build_report,
+    report::{build_report, BenchmarkReportContext},
     scenario::{run_benchmark, RunSettings, ScenarioKind},
 };
 
@@ -44,10 +46,16 @@ pub(crate) fn run() -> Result<()> {
             };
             let samples = run_benchmark(&client, &settings)?;
             let report = build_report(
-                &settings.workspace,
-                settings.scenario,
-                settings.concurrency,
-                started_at.elapsed().as_secs_f64() * 1_000.0,
+                BenchmarkReportContext {
+                    captured_at: Utc::now().to_rfc3339(),
+                    client_build: current_build_info(),
+                    concurrency: settings.concurrency,
+                    scenario: settings.scenario,
+                    server_build: fetch_server_build(&client, &settings.server),
+                    server_url: settings.server.clone(),
+                    total_duration_ms: started_at.elapsed().as_secs_f64() * 1_000.0_f64,
+                    workspace: settings.workspace.clone(),
+                },
                 samples,
             );
             let rendered = serde_json::to_string_pretty(&report).context(JsonRender)?;
@@ -65,4 +73,17 @@ fn apply_config_override(cli: &Cli) {
 
 fn build_http_client() -> Result<Client> {
     Client::builder().build().context(HttpClientBuild)
+}
+
+fn fetch_server_build(client: &Client, server: &str) -> Option<BuildInfo> {
+    let response = client
+        .get(format!("{}/", server.trim_end_matches('/')))
+        .send()
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let snapshot = response.json::<ServiceSnapshot>().ok()?;
+    Some(snapshot.build)
 }

@@ -3,8 +3,8 @@
     reason = "Benchmark scenarios are crate-local orchestration building blocks."
 )]
 
-use std::{sync::mpsc, thread, time::Instant};
 use core::time::Duration;
+use std::{sync::mpsc, thread, time::Instant};
 
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,10 @@ struct WorkerContext {
     workspace: String,
 }
 
-pub(crate) fn run_benchmark(client: &Client, settings: &RunSettings) -> Result<Vec<OperationSample>> {
+pub(crate) fn run_benchmark(
+    client: &Client,
+    settings: &RunSettings,
+) -> Result<Vec<OperationSample>> {
     if settings.operations == 0 {
         return Err(Config {
             message: "operations must be greater than zero".to_owned(),
@@ -154,22 +157,26 @@ fn execute_operation(client: &Client, worker_context: &WorkerContext, plan: Oper
                 "labels": ["benchmark"],
                 "epic_id": null,
             });
-            post_json(client, &worker_context.server, "/v1/tasks/offers", &request_body)
-        }
-        OperationKind::ListEvents => {
-            get_ok(
+            post_json(
                 client,
                 &worker_context.server,
-                &format!("/v1/workspaces/{}/events?limit=10", worker_context.workspace),
+                "/v1/tasks/offers",
+                &request_body,
             )
         }
-        OperationKind::ListOpenTasks => {
-            get_ok(
-                client,
-                &worker_context.server,
-                &format!("/v1/workspaces/{}/tasks/open", worker_context.workspace),
-            )
-        }
+        OperationKind::ListEvents => get_ok(
+            client,
+            &worker_context.server,
+            &format!(
+                "/v1/workspaces/{}/events?limit=10",
+                worker_context.workspace
+            ),
+        ),
+        OperationKind::ListOpenTasks => get_ok(
+            client,
+            &worker_context.server,
+            &format!("/v1/workspaces/{}/tasks/open", worker_context.workspace),
+        ),
         OperationKind::Scope => get_ok(client, &worker_context.server, "/scope"),
     }
 }
@@ -233,7 +240,11 @@ fn get_ok(client: &Client, server: &str, path: &str) -> bool {
 
 fn post_json(client: &Client, server: &str, path: &str, body: &serde_json::Value) -> bool {
     let request_url = url(server, path);
-    let send_result = client.post(&request_url).json(body).timeout(timeout()).send();
+    let send_result = client
+        .post(&request_url)
+        .json(body)
+        .timeout(timeout())
+        .send();
     let Ok(response) = send_result else {
         return false;
     };

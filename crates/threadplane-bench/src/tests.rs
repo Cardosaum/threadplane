@@ -1,7 +1,8 @@
 use rstest::rstest;
+use threadplane_core::build_info;
 
 use crate::{
-    report::summarize_latencies,
+    report::{build_report, summarize_latencies, BenchmarkReportContext},
     scenario::{
         partition_operation_plan, OperationKind, OperationPlan, OperationSample, ScenarioKind,
     },
@@ -64,10 +65,59 @@ fn operation_samples_sort_by_kind_rank() {
     });
 
     let sorted_kinds: Vec<OperationKind> = samples.into_iter().map(|sample| sample.kind).collect();
-    assert_eq!(sorted_kinds, vec![OperationKind::CreateNote, OperationKind::OfferTask]);
+    assert_eq!(
+        sorted_kinds,
+        vec![OperationKind::CreateNote, OperationKind::OfferTask]
+    );
 }
 
 #[test]
 fn scenario_kind_defaults_to_note_writes() {
     assert_eq!(ScenarioKind::default(), ScenarioKind::NoteWrites);
+}
+
+#[test]
+fn build_report_carries_capture_metadata() {
+    let report = build_report(
+        BenchmarkReportContext {
+            captured_at: "2026-03-17T12:00:00Z".to_owned(),
+            client_build: build_info(
+                "threadplane-bench",
+                "0.1.0",
+                "debug",
+                Some("abc123def456"),
+                false,
+            ),
+            concurrency: 4,
+            scenario: ScenarioKind::Mixed,
+            server_build: Some(build_info(
+                "threadplane-server",
+                "0.1.0",
+                "debug",
+                Some("fed654cba321"),
+                true,
+            )),
+            server_url: "http://127.0.0.1:4000".to_owned(),
+            total_duration_ms: 500.0_f64,
+            workspace: "bench-lab".to_owned(),
+        },
+        vec![OperationSample {
+            kind: OperationKind::CreateNote,
+            latency_ms: 25.0_f64,
+            succeeded: true,
+        }],
+    );
+
+    assert_eq!(report.captured_at, "2026-03-17T12:00:00Z");
+    assert_eq!(report.client_build.service, "threadplane-bench");
+    assert_eq!(
+        report
+            .server_build
+            .as_ref()
+            .map(|build| build.service.as_str()),
+        Some("threadplane-server")
+    );
+    assert_eq!(report.server_url, "http://127.0.0.1:4000");
+    assert_eq!(report.workspace, "bench-lab");
+    assert_eq!(report.operations, 1);
 }

@@ -105,6 +105,12 @@ For repeatable throughput and latency checks, use the benchmark harness:
 ./scripts/benchmark.sh mixed
 ```
 
+To capture durable local baselines for later comparison:
+
+```bash
+./scripts/capture-benchmark-baseline.sh
+```
+
 ## Two-Minute Walkthrough
 
 Create an epic:

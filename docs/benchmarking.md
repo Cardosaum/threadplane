@@ -20,6 +20,8 @@ It prints a JSON report with:
 
 - total operations
 - success/failure counts
+- client and server build provenance
+- capture timestamp and target server URL
 - total run duration
 - throughput in operations per second
 - latency summaries per operation kind
@@ -54,6 +56,30 @@ Example:
 ./scripts/benchmark.sh mixed > /tmp/threadplane-bench-mixed.json
 ```
 
+## Baseline Capture
+
+When you want a durable local benchmark snapshot instead of a one-off run, use:
+
+```bash
+./scripts/capture-benchmark-baseline.sh
+```
+
+That script:
+
+- runs both `note-writes` and `mixed`
+- stores timestamped JSON reports under `benchmarks/baselines/local-debug/`
+- records the operation counts and concurrency used for the capture
+- writes a small `README.txt` beside the reports so the capture is self-describing
+
+Useful overrides:
+
+```bash
+CONCURRENCY=16 NOTE_WRITES_OPERATIONS=250 MIXED_OPERATIONS=250 \
+  ./scripts/capture-benchmark-baseline.sh
+```
+
+The generated JSON includes the `threadplane-bench` build identity plus the server build identity when the server exposes it, so later comparisons have enough provenance to explain drift.
+
 ## What This Is For
 
 This harness is meant to answer questions like:
@@ -62,4 +88,6 @@ This harness is meant to answer questions like:
 - did median or tail latency get worse?
 - do mixed read/write workloads behave differently from pure writes?
 
-It is not yet a full stress lab. The separate roadmap items for baseline capture, thresholds, and projection-lag stress tests build on top of this harness.
+See [../benchmarks/README.md](../benchmarks/README.md) for the artifact directory layout.
+
+It is not yet a full stress lab. The separate roadmap items for thresholds, larger concurrency studies, and projection-lag stress tests build on top of this harness.

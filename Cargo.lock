@@ -2875,6 +2875,7 @@ dependencies = [
 name = "threadplane-bench"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "dotenvy",
  "reqwest",

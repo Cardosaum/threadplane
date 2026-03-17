@@ -48,11 +48,7 @@ pub(crate) struct RunCommand {
     #[arg(long, default_value_t = 100, help = "Total operations to execute.")]
     pub(crate) operations: usize,
 
-    #[arg(
-        long,
-        default_value = "mixed",
-        help = "Scenario profile to execute."
-    )]
+    #[arg(long, default_value = "mixed", help = "Scenario profile to execute.")]
     pub(crate) scenario: ScenarioKind,
 
     #[arg(long, help = "Workspace used for benchmark writes and reads.")]
