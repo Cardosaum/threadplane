@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 WORKSPACE="e2e-$(date +%s)"
 PROJECT="threadplane-${WORKSPACE}"
 SERVER_LOG="$(mktemp)"
+CONFIG_FILE="$(mktemp)"
 SERVER_PID=""
 
 pick_port() {
@@ -34,22 +35,31 @@ export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="${neo4j_password}"
 export NEO4J_HTTP_PORT="${neo4j_http_port}"
 export NEO4J_BOLT_PORT="${neo4j_bolt_port}"
-export THREADPLANE_DATABASE_URL="postgres://threadplane:${postgres_password}@127.0.0.1:${postgres_port}/threadplane"
-export THREADPLANE_NEO4J_URI="127.0.0.1:${neo4j_bolt_port}"
-export THREADPLANE_NEO4J_USER="neo4j"
-export THREADPLANE_NEO4J_PASSWORD="${neo4j_password}"
-export THREADPLANE_BIND="127.0.0.1:${server_port}"
-export THREADPLANE_URL="http://127.0.0.1:${server_port}"
+export THREADPLANE_CONFIG="${CONFIG_FILE}"
 
 cleanup() {
     if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
         kill "$SERVER_PID" >/dev/null 2>&1 || true
         wait "$SERVER_PID" >/dev/null 2>&1 || true
     fi
+    rm -f "$CONFIG_FILE"
     docker compose -p "$PROJECT" down -v >/dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
+
+cat >"$CONFIG_FILE" <<EOF
+[cli]
+url = "http://127.0.0.1:${server_port}"
+
+[server]
+bind = "127.0.0.1:${server_port}"
+database_url = "postgres://threadplane:${postgres_password}@127.0.0.1:${postgres_port}/threadplane"
+default_lease_seconds = 300
+neo4j_password = "${neo4j_password}"
+neo4j_uri = "127.0.0.1:${neo4j_bolt_port}"
+neo4j_user = "neo4j"
+EOF
 
 docker compose -p "$PROJECT" up -d postgres neo4j >/dev/null
 
@@ -64,7 +74,7 @@ done
 cargo run -q -p threadplane-server >"$SERVER_LOG" 2>&1 &
 SERVER_PID="$!"
 
-until curl -sf "$THREADPLANE_URL/healthz" >/dev/null; do
+until curl -sf "http://127.0.0.1:${server_port}/healthz" >/dev/null; do
     if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
         cat "$SERVER_LOG"
         exit 1
@@ -95,13 +105,54 @@ note_ref="$(jq -r '.data.entity_ref' <<<"$note_json")"
 
 link_json="$(
     cargo run -q -p threadplane-cli -- \
-        link add \
+        link xanadu \
         --workspace "$WORKSPACE" \
         --actor agent-a \
         --from "$task_ref" \
-        --to "$note_ref" \
-        --relation related_to
+        --to "$note_ref"
 )"
+transclusion_id="$(jq -r '.data.transclusion_id' <<<"$link_json")"
+[[ "$transclusion_id" != "null" ]]
+
+note_update_json="$(
+    cargo run -q -p threadplane-cli -- \
+        note update \
+        --workspace "$WORKSPACE" \
+        --actor agent-a \
+        --note-id "$(jq -r '.data.note_id' <<<"$note_json")" \
+        --title "Lease semantics updated" \
+        --body "A xanadu link should keep linked task text synchronized."
+)"
+
+context_after_note_update_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task context \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.task.title' <<<"$context_after_note_update_json")" == "Lease semantics updated" ]]
+[[ "$(jq -r '.data.task.details' <<<"$context_after_note_update_json")" == "A xanadu link should keep linked task text synchronized." ]]
+[[ "$(jq -r '.data.task.transclusion_id' <<<"$context_after_note_update_json")" == "$transclusion_id" ]]
+[[ "$(jq -r '.data.relations[0].relation' <<<"$context_after_note_update_json")" == "XANADU_LINK" ]]
+[[ "$(jq -r '.data.relations[0].transclusion_id' <<<"$context_after_note_update_json")" == "$transclusion_id" ]]
+
+task_update_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task update \
+        --workspace "$WORKSPACE" \
+        --actor operator \
+        --task-id "$task_id" \
+        --title "Canonical lease wording" \
+        --details "Updates from the task side should also rewrite the linked note."
+)"
+
+note_after_task_update_json="$(
+    cargo run -q -p threadplane-cli -- \
+        note show \
+        --note-id "$(jq -r '.data.note_id' <<<"$note_json")"
+)"
+[[ "$(jq -r '.data.title' <<<"$note_after_task_update_json")" == "Canonical lease wording" ]]
+[[ "$(jq -r '.data.body' <<<"$note_after_task_update_json")" == "Updates from the task side should also rewrite the linked note." ]]
+[[ "$(jq -r '.data.transclusion_id' <<<"$note_after_task_update_json")" == "$transclusion_id" ]]
 
 open_before_claim_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -133,7 +184,8 @@ context_json="$(
 )"
 [[ "$(jq -r '.data.active_claim.actor' <<<"$context_json")" == "agent-b" ]]
 [[ "$(jq -r '.data.relations[0].entity_ref' <<<"$context_json")" == "$note_ref" ]]
-[[ "$(jq -r '.data.relations[0].relation' <<<"$context_json")" == "RELATED_TO" ]]
+[[ "$(jq -r '.data.relations[0].relation' <<<"$context_json")" == "XANADU_LINK" ]]
+[[ "$(jq -r '.data.task.title' <<<"$context_json")" == "Canonical lease wording" ]]
 
 events_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -141,13 +193,18 @@ events_json="$(
         --workspace "$WORKSPACE" \
         --limit 10
 )"
-[[ "$(jq -r '.data | length' <<<"$events_json")" == "4" ]]
+[[ "$(jq -r '.data | length' <<<"$events_json")" == "6" ]]
 [[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_claimed" ]]
-[[ "$(jq -r '.data[3].kind' <<<"$events_json")" == "task_offered" ]]
+[[ "$(jq -r '.data[1].kind' <<<"$events_json")" == "task_updated" ]]
+[[ "$(jq -r '.data[2].kind' <<<"$events_json")" == "note_updated" ]]
+[[ "$(jq -r '.data[3].kind' <<<"$events_json")" == "xanadu_linked" ]]
+[[ "$(jq -r '.data[5].kind' <<<"$events_json")" == "task_offered" ]]
 
 echo "threadplane e2e ok"
 echo "workspace=$WORKSPACE"
 echo "$task_json"
 echo "$note_json"
 echo "$link_json"
+echo "$note_update_json"
+echo "$task_update_json"
 echo "$claim_json"

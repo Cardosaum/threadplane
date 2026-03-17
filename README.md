@@ -1,86 +1,83 @@
 # threadplane
 
-`threadplane` is a proposed shared memory and coordination service for human and AI agents.
+`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, links, and claims for each other to pick up later. For a quick feel, start with the [asciinema demo](./docs/threadplane-demo.cast) and play it locally with `asciinema play docs/threadplane-demo.cast`.
 
-The core idea is simple:
+This repository is a working POC. It already demonstrates shared notes, task offers and claims, graph links, and Xanadu-style transclusion where linked note/task text stays synchronized.
 
-- one internet-reachable service receives writes from CLIs, MCP clients, and automations
-- PostgreSQL stores the append-only event log and remains the system of record
-- Neo4j materializes a graph for notes, dependencies, provenance, and bidirectional links
-- tuple-space semantics live in the service so agents can discover, claim, and hand off work asynchronously
+Read next:
 
-This repository is a POC scaffold, not a finished product. The initial goal is to validate the architecture and API shape before we invest in deeper replication, search, and policy work.
+- [Onboarding guide](./docs/onboarding.md)
+- [Configuration guide](./docs/configuration.md)
+- [HTTP API reference](./docs/http-api.md)
 
-## Local Configuration
+## Why It Matters
 
-This repo does not commit reusable credentials. Generate a local `.env` before starting the stack:
+Most agent tooling gets one part right and leaves the rest as an exercise:
 
-```bash
-./scripts/generate-env.sh
-```
+- memory is local, but collaboration is weak
+- collaboration exists, but knowledge is not graph-native
+- knowledge is graph-native, but task handoff and dependency tracking are awkward
+- there is an event log, but no CLI-first workflow for humans and agents sharing the same context
 
-The generated `.env` is ignored by git. Docker Compose binds services to `127.0.0.1` by default so local database ports are not exposed on all interfaces.
+`threadplane` is meant to close that gap with a single control plane:
 
-## Why This Exists
+- shared context across people, CLIs, and agents
+- durable append-only history
+- graph-backed traversal of dependencies and provenance
+- lease-backed claiming so work can be discovered and handed off safely
+- Xanadu-style links for shared text between notes and tasks
 
-Existing agent memory tools get close, but they tend to optimize for one of these axes at the expense of the others:
+## What You Can Do Today
 
-- local-first memory with weak shared collaboration
-- shared memory without a first-class graph
-- graph memory without clear task and dependency coordination
-- event history without ergonomic CLI-first agent workflows
-
-`threadplane` is an attempt to combine those pieces into one design that feels like "networked Beads for people and agents", while still leaning on battle-tested infrastructure.
-
-## POC Direction
-
-The POC deliberately keeps the number of moving parts small:
-
-- `threadplane-server`: an HTTP control plane that accepts commands and exposes query endpoints
-- `threadplane-cli`: a CLI used by humans and agents
-- `PostgreSQL`: authoritative append-only event log, leases, and durable command state
-- `Neo4j`: graph projection for knowledge, dependencies, and traversal
-
-For the first iteration, tuple-space primitives are implemented in the service and persisted in PostgreSQL. That gives us internet reachability and operational simplicity without introducing a third coordination system on day one.
-
-## Why Not VarveDB As The First Source Of Truth
-
-VarveDB is a strong influence on the event-sourcing side of the design, especially the append-only log mindset. For this POC, though, it is the wrong default storage engine because the primary requirement is a shared, internet-reachable source of truth. VarveDB is embedded and excellent for in-process event storage, but this system needs a network-facing service boundary anyway.
-
-That makes PostgreSQL the practical first choice for the shared event log. If the product later needs offline-first replicas, edge ingestion, or high-performance local mirrors, VarveDB remains an interesting building block for agents or sidecars.
-
-## Repo Layout
-
-- `crates/threadplane-core`: shared types and POC summaries
-- `crates/threadplane-server`: minimal HTTP server scaffold
-- `crates/threadplane-cli`: CLI scaffold for notes, tasks, and links
-- `docs/poc-scope.md`: product scope, boundaries, and success criteria
-- `docs/architecture.md`: deeper technical design
-- `docs/adr/0001-authoritative-log-and-graph-projection.md`: first architecture decision record
-- `compose.yaml`: local PostgreSQL + Neo4j stack for development
+- Offer a task into a shared workspace.
+- Add notes that other agents can find later.
+- Create semantic links between entities.
+- Create Xanadu links so note/task text is kept in sync.
+- Claim open tasks with expiring leases.
+- Inspect recent workspace events.
+- Ask for task context enriched with graph-linked relations.
 
 ## Quick Start
 
-1. Start local dependencies:
+1. Generate local config and credentials:
 
 ```bash
 ./scripts/generate-env.sh
+```
+
+That creates:
+
+- `.env` for Docker Compose and local database credentials
+- `etc/config.toml` for `threadplane-server` and `threadplane-cli`
+
+2. Start PostgreSQL and Neo4j:
+
+```bash
 docker compose up -d
 ```
 
-2. Run the server:
+3. Start the API server:
 
 ```bash
 cargo run -p threadplane-server
 ```
 
-3. Inspect the current POC framing:
+4. In another terminal, inspect the service:
 
 ```bash
 cargo run -p threadplane-cli -- scope
+cargo run -p threadplane-cli -- config show
 ```
 
-4. Create a task, a note, and inspect context:
+5. Run the full smoke test if you want the fastest proof that everything works:
+
+```bash
+./scripts/e2e.sh
+```
+
+## Two-Minute Walkthrough
+
+Create a task:
 
 ```bash
 cargo run -p threadplane-cli -- task offer \
@@ -88,34 +85,143 @@ cargo run -p threadplane-cli -- task offer \
   --author operator \
   --title "Investigate tuple leases" \
   --details "Need a shared lease-backed claim flow."
+```
 
+Create a note:
+
+```bash
 cargo run -p threadplane-cli -- note add \
   --workspace shared-lab \
   --author agent-a \
-  --title "Agent handoff" \
-  --body "Investigate dependency edge semantics."
+  --title "Lease design note" \
+  --body "Claims should expire and return tasks to the pool."
 ```
 
-5. Run the end-to-end smoke test:
+Create a Xanadu link between them:
 
 ```bash
-./scripts/e2e.sh
+cargo run -p threadplane-cli -- link xanadu \
+  --workspace shared-lab \
+  --actor agent-a \
+  --from task:<task-id> \
+  --to note:<note-id>
 ```
 
-The e2e script boots PostgreSQL + Neo4j with Docker Compose, starts `threadplane-server` on `127.0.0.1:4010`, runs the CLI against the live service, and verifies task offers, notes, links, claims, event history, and graph-backed task context.
+Update one side and let the shared transclusion propagate:
 
-## Initial Name Choice
+```bash
+cargo run -p threadplane-cli -- note update \
+  --workspace shared-lab \
+  --actor agent-a \
+  --note-id <note-id> \
+  --title "Lease semantics updated" \
+  --body "A xanadu link should keep linked task text synchronized."
+```
 
-The proposed project name is `threadplane`.
+Inspect the task with graph-backed context:
 
-Why this one:
+```bash
+cargo run -p threadplane-cli -- task context --task-id <task-id>
+```
 
-- `thread` matches discussion, work items, notes, and dependency chains
-- `plane` suggests a shared coordination surface rather than a single database
-- it works whether the dominant interaction is CLI, MCP, or web API
+## CLI Surface
 
-Alternatives worth keeping in reserve:
+Current commands:
 
-- `knotspace`
-- `weftplane`
-- `relaygraph`
+- `scope`
+- `note add`
+- `note show`
+- `note update`
+- `task offer`
+- `task update`
+- `task claim`
+- `task list-open`
+- `task context`
+- `link add`
+- `link xanadu`
+- `events list`
+- `config show`
+
+Global options:
+
+- `--config <path>` to load a specific config file
+- `--server <url>` to override the configured API base URL
+
+## Configuration
+
+`threadplane` loads config in this order:
+
+1. built-in defaults
+2. repo-local `etc/config.toml`
+3. system config at `/etc/threadplane/config.toml`
+4. `THREADPLANE_CONFIG=/path/to/config.toml`
+5. `THREADPLANE__...` nested environment overrides
+
+See [etc/config.toml.example](./etc/config.toml.example) for the file format.
+
+Inspect the resolved config and discovery order:
+
+```bash
+cargo run -p threadplane-cli -- config show
+```
+
+Use an explicit config file for a one-off run:
+
+```bash
+cargo run -p threadplane-cli -- \
+  --config /path/to/config.toml \
+  scope
+```
+
+Example:
+
+```toml
+[cli]
+url = "http://127.0.0.1:4000"
+
+[server]
+bind = "127.0.0.1:4000"
+database_url = "postgres://threadplane:password@127.0.0.1:5432/threadplane"
+default_lease_seconds = 300
+neo4j_password = "password"
+neo4j_uri = "127.0.0.1:7687"
+neo4j_user = "neo4j"
+```
+
+## Architecture At A Glance
+
+- `threadplane-server` is the write boundary.
+- PostgreSQL is the system of record.
+- Neo4j is a rebuildable graph projection.
+- Tuple-space semantics live in the service layer.
+- Claims use leases so work returns to the pool if an agent disappears.
+- Xanadu links join textual entities into a shared transclusion group.
+
+## Why PostgreSQL First
+
+VarveDB is an important influence for the event-sourcing model, but this POC optimizes first for a shared internet-reachable source of truth. That makes PostgreSQL the practical first event log. If `threadplane` later grows local replicas or offline-first ingest, VarveDB is still an interesting building block for edge or sidecar use.
+
+## Repository Layout
+
+- `crates/threadplane-core`: shared types, config loading, and core helpers
+- `crates/threadplane-server`: HTTP server and projections
+- `crates/threadplane-cli`: human and agent CLI
+- `compose.yaml`: local PostgreSQL and Neo4j stack
+- `docs/poc-scope.md`: POC boundaries and success criteria
+- `docs/onboarding.md`: first-run walkthrough for humans and agents
+- `docs/configuration.md`: config precedence, examples, and troubleshooting
+- `docs/http-api.md`: endpoint-level API reference
+- `docs/architecture.md`: deeper architecture notes
+- `docs/adr/0001-authoritative-log-and-graph-projection.md`: first ADR
+
+## Current Status
+
+This is a POC, not a finished platform. The current implementation proves the shape:
+
+- end-to-end CLI flow works
+- event log is durable in PostgreSQL
+- graph projection is live in Neo4j
+- task claims are lease-backed
+- Xanadu linking propagates content between note/task pairs
+
+The next layers are production concerns such as auth, idempotency, richer task lifecycle, replay workers, and MCP-facing ergonomics.

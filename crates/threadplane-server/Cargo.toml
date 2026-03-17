@@ -1,21 +1,36 @@
 [package]
 name = "threadplane-server"
+categories = ["command-line-utilities", "development-tools"]
+description = "HTTP server for the threadplane shared memory and coordination plane"
 edition.workspace = true
+keywords = ["agents", "axum", "graph", "knowledge", "server"]
 license.workspace = true
+readme = "../../README.md"
+repository = "https://github.com/Cardosaum/threadplane"
 rust-version.workspace = true
 version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
+derive_more.workspace = true
 dotenvy.workspace = true
 neo4rs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+snafu.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 threadplane-core = { path = "../threadplane-core" }
 uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true

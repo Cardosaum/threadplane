@@ -1,0 +1,10 @@
+[cli]
+url = "http://127.0.0.1:4000"
+
+[server]
+bind = "127.0.0.1:4000"
+database_url = "postgres://threadplane:replace-with-a-generated-password@127.0.0.1:5432/threadplane"
+default_lease_seconds = 300
+neo4j_password = "replace-with-a-generated-password"
+neo4j_uri = "127.0.0.1:7687"
+neo4j_user = "neo4j"

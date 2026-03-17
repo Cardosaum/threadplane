@@ -3,10 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT_DIR}/.env"
+CONFIG_DIR="${ROOT_DIR}/etc"
+CONFIG_FILE="${CONFIG_DIR}/config.toml"
 
-if [[ -f "$ENV_FILE" && "${1:-}" != "--force" ]]; then
-    echo ".env already exists at $ENV_FILE"
-    echo "Run scripts/generate-env.sh --force to overwrite it."
+if [[ ( -f "$ENV_FILE" || -f "$CONFIG_FILE" ) && "${1:-}" != "--force" ]]; then
+    echo "local config already exists"
+    echo "  env: $ENV_FILE"
+    echo "  app config: $CONFIG_FILE"
+    echo "Run scripts/generate-env.sh --force to overwrite them."
     exit 1
 fi
 
@@ -18,6 +22,8 @@ require_cmd() {
 }
 
 require_cmd openssl
+
+mkdir -p "$CONFIG_DIR"
 
 postgres_password="$(openssl rand -hex 18)"
 neo4j_password="$(openssl rand -hex 18)"
@@ -32,14 +38,20 @@ NEO4J_USER=neo4j
 NEO4J_PASSWORD=${neo4j_password}
 NEO4J_HTTP_PORT=7474
 NEO4J_BOLT_PORT=7687
+EOF
 
-THREADPLANE_BIND=127.0.0.1:4000
-THREADPLANE_URL=http://127.0.0.1:4000
-THREADPLANE_DATABASE_URL=postgres://threadplane:${postgres_password}@127.0.0.1:5432/threadplane
-THREADPLANE_NEO4J_URI=127.0.0.1:7687
-THREADPLANE_NEO4J_USER=neo4j
-THREADPLANE_NEO4J_PASSWORD=${neo4j_password}
-THREADPLANE_DEFAULT_LEASE_SECONDS=300
+cat >"$CONFIG_FILE" <<EOF
+[cli]
+url = "http://127.0.0.1:4000"
+
+[server]
+bind = "127.0.0.1:4000"
+database_url = "postgres://threadplane:${postgres_password}@127.0.0.1:5432/threadplane"
+default_lease_seconds = 300
+neo4j_password = "${neo4j_password}"
+neo4j_uri = "127.0.0.1:7687"
+neo4j_user = "neo4j"
 EOF
 
 echo "generated $ENV_FILE"
+echo "generated $CONFIG_FILE"

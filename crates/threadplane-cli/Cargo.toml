@@ -1,9 +1,17 @@
 [package]
 name = "threadplane-cli"
+categories = ["command-line-utilities", "development-tools"]
+description = "CLI for the threadplane shared memory and coordination plane"
 edition.workspace = true
+keywords = ["agents", "cli", "graph", "knowledge", "workflow"]
 license.workspace = true
+readme = "../../README.md"
+repository = "https://github.com/Cardosaum/threadplane"
 rust-version.workspace = true
 version.workspace = true
+
+[lints]
+workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -12,5 +20,6 @@ dotenvy.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+snafu.workspace = true
 threadplane-core = { path = "../threadplane-core" }
 uuid.workspace = true
