@@ -19,8 +19,8 @@ use crate::error::{ServerResult, ThreadplaneServerError};
 use threadplane_core::{
     epic_entity_ref, normalize_task_labels, normalize_task_owner, note_entity_ref,
     parse_entity_ref, task_entity_ref, EntityRef, EpicRecord, EventKind, EventRecord,
-    ProjectionStatus, TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata,
-    TaskPriority, TaskRecord, TaskSummary, DEPENDS_ON_RELATION,
+    EntityRecord, NoteRecord, ProjectionStatus, TaskClaimRecord, TaskDependencySummary,
+    TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary, DEPENDS_ON_RELATION,
 };
 
 pub(crate) const NOTE_SELECT: &str = "
@@ -522,6 +522,26 @@ pub(crate) async fn fetch_task_by_id(pool: &PgPool, task_id: Uuid) -> ServerResu
         .fetch_optional(pool)
         .await?
         .ok_or_else(|| ThreadplaneServerError::not_found("task not found"))
+}
+
+pub(crate) async fn fetch_entity_record(pool: &PgPool, entity_ref: &str) -> ServerResult<EntityRecord> {
+    match parse_entity_ref(entity_ref) {
+        Some(EntityRef::Epic(epic_id)) => {
+            let epic = fetch_epic_by_id(pool, epic_id).await?;
+            Ok(EntityRecord::Epic(EpicRecord::from(epic)))
+        }
+        Some(EntityRef::Note(note_id)) => {
+            let note = fetch_note_by_id(pool, note_id).await?;
+            Ok(EntityRecord::Note(NoteRecord::from(note)))
+        }
+        Some(EntityRef::Task(task_id)) => {
+            let task = fetch_task_by_id(pool, task_id).await?;
+            Ok(EntityRecord::Task(TaskRecord::from(task)))
+        }
+        None => Err(ThreadplaneServerError::bad_request(format!(
+            "invalid entity ref: {entity_ref}"
+        ))),
+    }
 }
 
 fn normalized_note_query(value: Option<&str>) -> Option<String> {

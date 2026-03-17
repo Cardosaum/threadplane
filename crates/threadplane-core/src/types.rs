@@ -383,6 +383,20 @@ pub struct TaskContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "record", rename_all = "snake_case")]
+pub enum EntityRecord {
+    Epic(EpicRecord),
+    Note(NoteRecord),
+    Task(TaskRecord),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityContext {
+    pub entity: EntityRecord,
+    pub relations: Vec<GraphRelation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiEnvelope<T> {
     pub data: T,
     pub ok: bool,

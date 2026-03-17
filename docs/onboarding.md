@@ -151,6 +151,8 @@ Inspect graph-backed context:
 
 ```bash
 cargo run -p threadplane-cli -- task context --task-id <task-id>
+cargo run -p threadplane-cli -- entity show --entity-ref note:<note-id> --format compact
+cargo run -p threadplane-cli -- entity related --entity-ref epic:<epic-id> --format compact
 ```
 
 Tail new workspace events:
@@ -220,6 +222,7 @@ That script boots the local stack, starts the API server, runs the CLI against i
 - task release and completion
 - event history
 - graph-backed task context
+- graph-backed entity exploration
 
 ## Common Next Steps
 

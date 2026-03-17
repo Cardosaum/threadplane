@@ -99,6 +99,7 @@ epic_json="$(
         --body "Dogfood first-class epics and task DAGs."
 )"
 epic_id="$(jq -r '.data.epic_id' <<<"$epic_json")"
+epic_ref="$(jq -r '.data.entity_ref' <<<"$epic_json")"
 
 dependency_task_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -381,6 +382,31 @@ note_search_compact="$(
         --format compact
 )"
 [[ "$note_search_compact" == *"Canonical lease wording"* ]]
+
+entity_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        entity show \
+        --entity-ref "$note_ref"
+)"
+[[ "$(jq -r '.data.entity.kind' <<<"$entity_show_json")" == "note" ]]
+[[ "$(jq -r '.data.entity.record.note_id' <<<"$entity_show_json")" == "$note_id" ]]
+[[ "$(jq -r --arg task_ref "$task_ref" '.data.relations[] | select(.entity_ref == $task_ref) | .relation' <<<"$entity_show_json")" == "XANADU_LINK" ]]
+
+epic_related_json="$(
+    cargo run -q -p threadplane-cli -- \
+        entity related \
+        --entity-ref "$epic_ref"
+)"
+[[ "$(jq -r --arg task_ref "$task_ref" '.data[] | select(.entity_ref == $task_ref) | .relation' <<<"$epic_related_json")" == "IMPLEMENTS_EPIC" ]]
+
+entity_related_compact="$(
+    cargo run -q -p threadplane-cli -- \
+        entity related \
+        --entity-ref "$note_ref" \
+        --format compact
+)"
+[[ "$entity_related_compact" == *"XANADU_LINK"* ]]
+[[ "$entity_related_compact" == *"${task_ref%%-*}"* ]]
 
 updated_task_show_json="$(
     cargo run -q -p threadplane-cli -- \

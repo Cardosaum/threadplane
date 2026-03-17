@@ -88,6 +88,19 @@ Request:
 `GET /v1/workspaces/{workspace}/epics`
 - List epics for a workspace.
 
+## Entities
+
+`GET /v1/entities/{entity_ref}`
+- Fetch a note, task, or epic through one entity-oriented read model plus its graph-linked relations.
+
+Examples:
+- `task:00000000-0000-0000-0000-000000000000`
+- `note:00000000-0000-0000-0000-000000000000`
+- `epic:00000000-0000-0000-0000-000000000000`
+
+`GET /v1/entities/{entity_ref}/relations`
+- Fetch only the graph-linked relations for a note, task, or epic.
+
 ## Tasks
 
 `POST /v1/tasks/offers`

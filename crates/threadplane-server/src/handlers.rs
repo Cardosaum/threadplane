@@ -25,7 +25,7 @@ use crate::{
     },
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
     projections::{
-        fetch_task_relations, project_claim, project_epic, project_link, project_note,
+        fetch_entity_relations, project_claim, project_epic, project_link, project_note,
         project_task, project_task_dependency_by_id, project_task_supporting_entities,
         reproject_transclusion_group,
     },
@@ -34,7 +34,7 @@ use crate::{
         append_event, append_task_dependency, build_task_list_entries, fetch_active_claim,
         fetch_active_claim_tx, fetch_dependency_chain, fetch_dependent_chain,
         fetch_direct_dependencies, fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx,
-        fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
+        fetch_entity_record, fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
         fetch_event_rows_after_workspace_cursor, fetch_event_rows_for_workspace, fetch_note_by_id,
         fetch_note_by_id_tx, fetch_notes_for_listing, fetch_projection_status, fetch_task_by_id,
         fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group, record_projection_cursor,
@@ -46,10 +46,10 @@ use threadplane_core::{
     health_summary, normalize_task_labels, normalize_task_owner, scope_summary, service_snapshot,
     AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimNextTaskRequest,
     ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord,
-    OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord,
-    TaskContext, TaskDag, TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest,
-    UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
+    CreateXanaduLinkRequest, EntityContext, EpicRecord, EventKind, EventRecord, LinkRecord,
+    NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot,
+    TaskClaimRecord, TaskContext, TaskDag, TaskListEntry, TaskPriority, TaskRecord,
+    UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -488,6 +488,30 @@ pub(crate) async fn show_epic(
 ) -> AppResult<EpicRecord> {
     let row = fetch_epic_by_id(state.pool(), epic_id).await?;
     Ok(success(EpicRecord::from(row)))
+}
+
+pub(crate) async fn show_entity(
+    State(state): State<AppState>,
+    Path(entity_ref): Path<String>,
+) -> AppResult<EntityContext> {
+    let entity = fetch_entity_record(state.pool(), &entity_ref).await?;
+    let relations = fetch_entity_relations(state.graph(), &entity_ref)
+        .await
+        .map_err(ThreadplaneServerError::internal)?;
+
+    Ok(success(EntityContext { entity, relations }))
+}
+
+pub(crate) async fn related_entities(
+    State(state): State<AppState>,
+    Path(entity_ref): Path<String>,
+) -> AppResult<Vec<threadplane_core::GraphRelation>> {
+    let _entity = fetch_entity_record(state.pool(), &entity_ref).await?;
+    let relations = fetch_entity_relations(state.graph(), &entity_ref)
+        .await
+        .map_err(ThreadplaneServerError::internal)?;
+
+    Ok(success(relations))
 }
 
 pub(crate) async fn create_note(
@@ -1537,7 +1561,7 @@ pub(crate) async fn task_context(
     let epic = fetch_epic_for_task(state.pool(), &task).await?;
     let dependencies = fetch_direct_dependencies(state.pool(), task_id).await?;
     let dependents = fetch_direct_dependents(state.pool(), task_id).await?;
-    let relations = fetch_task_relations(state.graph(), task_id)
+    let relations = fetch_entity_relations(state.graph(), &threadplane_core::task_entity_ref(task_id))
         .await
         .map_err(ThreadplaneServerError::internal)?;
 

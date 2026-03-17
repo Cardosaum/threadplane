@@ -16,9 +16,9 @@ pub use self::types::{
     service_snapshot, task_entity_ref, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope,
     BuildComparison, BuildFieldDifference, BuildInfo, ClaimNextTaskRequest, ClaimTaskRequest,
     CommandReceipt, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityRef, EpicRecord, EventEnvelope, EventKind, EventRecord,
-    GraphRelation, LinkRecord, NoteRecord, ProjectionStatus,
-    OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    CreateXanaduLinkRequest, EntityContext, EntityRecord, EntityRef, EpicRecord, EventEnvelope,
+    EventKind, EventRecord, GraphRelation, LinkRecord, NoteRecord, OfferTaskRequest,
+    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
     TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary,
     UpdateNoteRequest, UpdateTaskRequest,
 };

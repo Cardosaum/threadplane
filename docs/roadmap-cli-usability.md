@@ -135,14 +135,17 @@ Scope:
 
 ## Current Implementation Status
 
-In progress:
+Implemented:
 
 - Phase 1 queue selection
 - Phase 1 note discovery
 - Phase 1 incremental event consumption
 
-Not started:
+In progress:
 
 - Phase 2 entity exploration
+
+Not started:
+
 - Phase 3 machine contracts
 - Phase 4 identity and integration

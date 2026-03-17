@@ -18,11 +18,12 @@ use threadplane_core::{
     compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
     AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimNextTaskRequest,
     ClaimTaskRequest, CliConfigOverrides, CompleteTaskRequest, ConfigDiscovery,
-    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EventRecord,
-    NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot,
-    TaskClaimRecord, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata,
-    TaskPriority, TaskRecord, ThreadplaneConfig, ThreadplaneConfigOverrides,
-    UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EntityRecord,
+    EventRecord, GraphRelation, NoteRecord, OfferTaskRequest, ProjectionStatus,
+    ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
+    ThreadplaneConfig, ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest,
+    SERVICE_NAME,
 };
 
 use crate::{
@@ -78,6 +79,7 @@ impl Cli {
 enum Command {
     Build(BuildCommand),
     Config(ConfigCommand),
+    Entity(EntityCommand),
     Epic(EpicCommand),
     Events(EventsCommand),
     Link(LinkCommand),
@@ -86,6 +88,47 @@ enum Command {
     #[command(about = "Show the product and architecture summary exposed by the service")]
     Scope,
     Task(TaskCommand),
+}
+
+#[derive(Debug, Args)]
+#[command(about = "Explore entities and their graph-linked relations")]
+struct EntityCommand {
+    #[command(subcommand)]
+    command: EntitySubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum EntitySubcommand {
+    #[command(about = "List entities related to the selected entity")]
+    Related(RelatedEntities),
+    #[command(about = "Fetch an entity and its related graph neighborhood")]
+    Show(ShowEntity),
+}
+
+#[derive(Debug, Args)]
+struct ShowEntity {
+    #[arg(long, help = "Entity ref, for example task:<uuid> or note:<uuid>")]
+    entity_ref: String,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct RelatedEntities {
+    #[arg(long, help = "Entity ref, for example task:<uuid> or note:<uuid>")]
+    entity_ref: String,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
 }
 
 #[derive(Debug, Args)]
@@ -780,6 +823,7 @@ pub(crate) fn execute(
     match root_command {
         Command::Build(build_command) => handle_build(client, &server, &build_command)?,
         Command::Config(config_command) => handle_config(&config_command, config, discovery)?,
+        Command::Entity(entity_command) => handle_entity(client, &server, entity_command)?,
         Command::Epic(epic_command) => {
             handle_epic(client, &server, idempotency_key, epic_command)?;
         }
@@ -862,6 +906,39 @@ fn handle_config(
             });
             print_value(&payload)
         }
+    }
+}
+
+fn handle_entity(client: &Client, server: &str, command: EntityCommand) -> Result<()> {
+    match command.command {
+        EntitySubcommand::Show(entity) => handle_show_entity(client, server, &entity),
+        EntitySubcommand::Related(entity) => handle_related_entities(client, server, &entity),
+    }
+}
+
+fn handle_show_entity(client: &Client, server: &str, entity: &ShowEntity) -> Result<()> {
+    let path = entity_show_path(entity.entity_ref.as_str());
+    let response: ApiEnvelope<EntityContext> = get_json(client, server, &path)?;
+
+    match entity.format {
+        OutputFormat::Compact => {
+            print!("{}", render_entity_context_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
+    }
+}
+
+fn handle_related_entities(client: &Client, server: &str, entity: &RelatedEntities) -> Result<()> {
+    let path = entity_relations_path(entity.entity_ref.as_str());
+    let response: ApiEnvelope<Vec<GraphRelation>> = get_json(client, server, &path)?;
+
+    match entity.format {
+        OutputFormat::Compact => {
+            print!("{}", render_graph_relations_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
     }
 }
 
@@ -1456,8 +1533,73 @@ pub(crate) fn render_event_list_compact(entries: &[EventRecord]) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+pub(crate) fn render_entity_context_compact(context: &EntityContext) -> String {
+    let mut rendered = compact_entity_summary(&context.entity);
+    rendered.push('\n');
+    rendered.push_str(&render_graph_relations_compact(&context.relations));
+    rendered
+}
+
+pub(crate) fn render_graph_relations_compact(entries: &[GraphRelation]) -> String {
+    if entries.is_empty() {
+        return "no related entities\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            let title = entry.title.as_deref().unwrap_or("untitled");
+            format!(
+                "{} {} | {} | {}",
+                entry.direction,
+                entry.relation,
+                short_entity_ref(entry.entity_ref.as_str()),
+                title
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn compact_entity_summary(entity: &EntityRecord) -> String {
+    match entity {
+        EntityRecord::Epic(record) => format!(
+            "epic {} | {} | author={} | workspace={}",
+            short_uuid(&record.epic_id),
+            record.title,
+            record.author,
+            record.workspace
+        ),
+        EntityRecord::Note(record) => format!(
+            "note {} | {} | author={} | workspace={}",
+            short_uuid(&record.note_id),
+            record.title,
+            record.author,
+            record.workspace
+        ),
+        EntityRecord::Task(record) => format!(
+            "task {} | {} | status={} | priority={} | owner={} | workspace={}",
+            short_uuid(&record.task_id),
+            record.title,
+            record.status,
+            record.metadata.priority,
+            record.metadata.owner.as_deref().unwrap_or("none"),
+            record.workspace
+        ),
+    }
+}
+
 fn short_task_id(task_id: &Uuid) -> String {
     short_uuid(task_id)
+}
+
+fn short_entity_ref(entity_ref: &str) -> String {
+    let Some((kind, raw_id)) = entity_ref.split_once(':') else {
+        return entity_ref.to_owned();
+    };
+    let short_id = raw_id.split('-').next().unwrap_or(raw_id);
+    format!("{kind}:{short_id}")
 }
 
 fn short_uuid(value: &Uuid) -> String {
@@ -1563,6 +1705,14 @@ pub(crate) fn note_list_path(
     };
 
     format!("/v1/workspaces/{workspace}/notes{suffix}")
+}
+
+pub(crate) fn entity_show_path(entity_ref: &str) -> String {
+    format!("/v1/entities/{entity_ref}")
+}
+
+pub(crate) fn entity_relations_path(entity_ref: &str) -> String {
+    format!("/v1/entities/{entity_ref}/relations")
 }
 
 pub(crate) fn events_list_path(workspace: &str, limit: i64) -> String {

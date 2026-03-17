@@ -4,15 +4,16 @@ use snafu::IntoError as _;
 use uuid::Uuid;
 
 use crate::command::{
-    build_mismatch_warning, dedup_task_ids, events_list_path, events_tail_path, note_list_path,
-    render_event_list_compact, render_note_list_compact, render_task_dependency_compact,
-    render_task_list_compact, triage_has_changes,
+    build_mismatch_warning, dedup_task_ids, entity_relations_path, entity_show_path,
+    events_list_path, events_tail_path, note_list_path, render_entity_context_compact,
+    render_event_list_compact, render_graph_relations_compact, render_note_list_compact,
+    render_task_dependency_compact, render_task_list_compact, triage_has_changes,
 };
 use crate::error::{ContractMismatchDetails, JsonContractMismatch};
 use threadplane_core::{
-    build_info, compare_build_info, EpicRecord, EventKind, EventRecord, NoteRecord,
-    TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority,
-    TaskSummary,
+    build_info, compare_build_info, EntityContext, EntityRecord, EpicRecord, EventKind,
+    EventRecord, GraphRelation, NoteRecord, TaskClaimRecord, TaskDependencySummary, TaskListEntry,
+    TaskMetadata, TaskPriority, TaskSummary,
 };
 
 fn sample_task_metadata() -> TaskMetadata {
@@ -195,6 +196,53 @@ fn render_event_list_compact_formats_entries() {
 }
 
 #[test]
+fn render_graph_relations_compact_formats_entries() {
+    let rendered = render_graph_relations_compact(&[GraphRelation {
+        body: Some("Shared note".to_owned()),
+        direction: "incoming".to_owned(),
+        entity_kind: "note".to_owned(),
+        entity_ref: "note:11111111-2222-3333-4444-555555555555".to_owned(),
+        relation: "XANADU_LINK".to_owned(),
+        title: Some("Lease wording".to_owned()),
+        transclusion_id: None,
+    }]);
+
+    assert!(rendered.contains("incoming XANADU_LINK"));
+    assert!(rendered.contains("note:11111111"));
+    assert!(rendered.contains("Lease wording"));
+}
+
+#[test]
+fn render_entity_context_compact_formats_task_summary_and_relations() {
+    let rendered = render_entity_context_compact(&EntityContext {
+        entity: EntityRecord::Epic(EpicRecord {
+            author: "operator".to_owned(),
+            body: "Dogfood the repo itself.".to_owned(),
+            created_at: "2026-03-17T04:00:00Z".to_owned(),
+            entity_ref: "epic:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+            epic_id: Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+            event_id: Uuid::parse_str("cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+            title: "Dogfooding".to_owned(),
+            updated_at: "2026-03-17T04:00:00Z".to_owned(),
+            workspace: "threadplane-dev".to_owned(),
+        }),
+        relations: vec![GraphRelation {
+            body: Some("Shared note".to_owned()),
+            direction: "outgoing".to_owned(),
+            entity_kind: "task".to_owned(),
+            entity_ref: "task:11111111-2222-3333-4444-555555555555".to_owned(),
+            relation: "IMPLEMENTS_EPIC".to_owned(),
+            title: Some("Ship durable task lifecycle".to_owned()),
+            transclusion_id: None,
+        }],
+    });
+
+    assert!(rendered.contains("epic aaaaaaaa | Dogfooding"));
+    assert!(rendered.contains("outgoing IMPLEMENTS_EPIC"));
+    assert!(rendered.contains("task:11111111"));
+}
+
+#[test]
 fn note_list_path_applies_optional_filters() {
     let path = note_list_path(
         "threadplane-dev",
@@ -220,6 +268,20 @@ fn events_paths_match_workspace_reads() {
     assert_eq!(
         events_tail_path("threadplane-dev", 15, Some(event_id)),
         format!("/v1/workspaces/threadplane-dev/events/tail?limit=15&after_event_id={event_id}")
+    );
+}
+
+#[test]
+fn entity_paths_match_entity_reads() {
+    let entity_ref = "task:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+    assert_eq!(
+        entity_show_path(entity_ref),
+        "/v1/entities/task:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    assert_eq!(
+        entity_relations_path(entity_ref),
+        "/v1/entities/task:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/relations"
     );
 }
 

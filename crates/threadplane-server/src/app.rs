@@ -33,9 +33,9 @@ use crate::{
     handlers::{
         add_link, add_task_dependency, add_xanadu_link, claim_next_task, claim_task,
         complete_task, create_epic, create_note, healthz, list_epics, list_events, list_notes,
-        list_open_tasks, list_tasks, next_task, offer_task, projection_status, release_task,
-        root, scope, show_epic, show_note, show_task, tail_events, task_context, task_dag,
-        update_note, update_task,
+        list_open_tasks, list_tasks, next_task, offer_task, projection_status, related_entities,
+        release_task, root, scope, show_entity, show_epic, show_note, show_task, tail_events,
+        task_context, task_dag, update_note, update_task,
     },
     lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
     migration::run_migrations,
@@ -275,12 +275,19 @@ fn build_router(state: AppState) -> Router {
 
 fn api_v1_router() -> Router<AppState> {
     Router::new()
+        .nest("/entities", entity_routes())
         .nest("/epics", epic_routes())
         .nest("/links", link_routes())
         .nest("/notes", note_routes())
         .nest("/projections", projection_routes())
         .nest("/tasks", task_routes())
         .nest("/workspaces/{workspace}", workspace_routes())
+}
+
+fn entity_routes() -> Router<AppState> {
+    Router::new()
+        .route("/{entity_ref}", get(show_entity))
+        .route("/{entity_ref}/relations", get(related_entities))
 }
 
 fn epic_routes() -> Router<AppState> {

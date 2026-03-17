@@ -20,22 +20,21 @@ use threadplane_core::{
     NoteRecord, TaskClaimRecord, TaskRecord,
 };
 
-pub(crate) async fn fetch_task_relations(
+pub(crate) async fn fetch_entity_relations(
     graph: &Graph,
-    task_id: Uuid,
+    entity_ref: &str,
 ) -> ServerResult<Vec<GraphRelation>> {
-    let task_ref = task_entity_ref(task_id);
     let mut result = graph
         .execute(
             query(
                 "
-                MATCH (task:Entity {entity_ref: $task_ref})
-                OPTIONAL MATCH (task)-[rel]-(other:Entity)
+                MATCH (entity:Entity {entity_ref: $entity_ref})
+                OPTIONAL MATCH (entity)-[rel]-(other:Entity)
                 RETURN
                   DISTINCT type(rel) AS relation,
                   CASE
                     WHEN rel IS NULL THEN NULL
-                    WHEN startNode(rel).entity_ref = $task_ref THEN 'outgoing'
+                    WHEN startNode(rel).entity_ref = $entity_ref THEN 'outgoing'
                     ELSE 'incoming'
                   END AS direction,
                   other.entity_ref AS entity_ref,
@@ -46,7 +45,7 @@ pub(crate) async fn fetch_task_relations(
                 ORDER BY relation, entity_ref
                 ",
             )
-            .param("task_ref", task_ref),
+            .param("entity_ref", entity_ref.to_owned()),
         )
         .await?;
 
@@ -58,20 +57,20 @@ pub(crate) async fn fetch_task_relations(
         };
 
         let relation_opt: Option<String> = row.get("relation")?;
-        let entity_ref_opt: Option<String> = row.get("entity_ref")?;
+        let related_entity_ref_opt: Option<String> = row.get("entity_ref")?;
         let entity_kind_opt: Option<String> = row.get("entity_kind")?;
         let direction_opt: Option<String> = row.get("direction")?;
         let title: Option<String> = row.get("title")?;
         let body: Option<String> = row.get("body")?;
         let transclusion_id: Option<String> = row.get("transclusion_id")?;
 
-        if let (Some(relation), Some(entity_ref), Some(entity_kind), Some(direction)) =
-            (relation_opt, entity_ref_opt, entity_kind_opt, direction_opt)
+        if let (Some(relation), Some(related_entity_ref), Some(entity_kind), Some(direction)) =
+            (relation_opt, related_entity_ref_opt, entity_kind_opt, direction_opt)
         {
             relations.push(GraphRelation {
                 relation,
                 direction,
-                entity_ref,
+                entity_ref: related_entity_ref,
                 entity_kind,
                 title,
                 body,

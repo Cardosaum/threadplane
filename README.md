@@ -45,6 +45,7 @@ Most agent tooling gets one part right and leaves the rest as an exercise:
 - Release or complete tasks as work moves through the DAG.
 - Inspect recent workspace events.
 - Ask for task context enriched with graph-linked relations.
+- Explore graph-linked relations from notes, tasks, and epics with entity-centric reads.
 
 ## Quick Start
 
@@ -218,6 +219,18 @@ cargo run -p threadplane-cli -- note add \
   --body "Claims should expire and return tasks to the pool."
 ```
 
+Explore related entities without going through a task-only context path:
+
+```bash
+cargo run -p threadplane-cli -- entity show \
+  --entity-ref note:<note-id> \
+  --format compact
+
+cargo run -p threadplane-cli -- entity related \
+  --entity-ref epic:<epic-id> \
+  --format compact
+```
+
 List or search notes without remembering UUIDs:
 
 ```bash
@@ -278,6 +291,8 @@ Current commands:
 - `epic add`
 - `epic list`
 - `epic show`
+- `entity related`
+- `entity show`
 - `note add`
 - `note list`
 - `note search`
