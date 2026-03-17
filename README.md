@@ -2,7 +2,7 @@
 
 ![threadplane demo](./docs/threadplane-demo.gif)
 
-`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, epics, task DAGs, and claims for each other to pick up later. The animation above is rendered from the source [asciinema cast](./docs/threadplane-demo.cast).
+`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, epics, task DAGs, and claims for each other to pick up later. The animation above is rendered from the source [asciinema cast](./docs/threadplane-demo.cast), and you can regenerate both assets with `./scripts/regenerate-demo.sh`.
 
 This repository is a working POC. It already demonstrates first-class epics, DAG-style task dependencies, lease-backed task lifecycle, graph links, and Xanadu-style transclusion where linked note/task text stays synchronized.
 
