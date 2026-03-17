@@ -134,6 +134,20 @@ tplane epic add \
   --body "Shared backlog for the workspace."
 ```
 
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "epic_id": "<epic-id>",
+    "entity_ref": "epic:<epic-id>",
+    "title": "Workflow foundations",
+    "workspace": "shared-lab"
+  }
+}
+```
+
 Create a dependency task:
 
 ```bash
@@ -143,6 +157,20 @@ tplane task offer \
   --epic-id <epic-id> \
   --title "Ship durable task lifecycle" \
   --details "Completion should unlock dependent work."
+```
+
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "task_id": "<dependency-task-id>",
+    "status": "open",
+    "priority": "medium",
+    "title": "Ship durable task lifecycle"
+  }
+}
 ```
 
 Create a dependent task:
@@ -161,6 +189,21 @@ tplane task offer \
   --details "Need a shared lease-backed claim flow with dependency tracking."
 ```
 
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "task_id": "<task-id>",
+    "status": "open",
+    "priority": "high",
+    "owner": "codex",
+    "labels": ["agent", "workflow"]
+  }
+}
+```
+
 Inspect the DAG view:
 
 ```bash
@@ -168,6 +211,16 @@ tplane task show --task-id <task-id>
 tplane task dag --task-id <task-id>
 tplane task blocked-by --task-id <task-id>
 tplane task blocks --task-id <dependency-task-id> --direct-only
+```
+
+Expected output:
+
+```text
+task:<task-id> open high owner=codex labels=[agent,workflow]
+blocked by:
+- task:<dependency-task-id> Ship durable task lifecycle [open]
+blocks:
+- task:<task-id> Investigate tuple leases [open]
 ```
 
 Complete the prerequisite and ask for ready work:
@@ -186,6 +239,20 @@ tplane task list \
   --format compact
 ```
 
+Expected output:
+
+```text
+{
+  "ok": true,
+  "data": {
+    "task_id": "<dependency-task-id>",
+    "status": "completed"
+  }
+}
+
+task:<task-id> high open ready epic=Workflow foundations owner=codex
+```
+
 Ready queues come back ordered by priority first and then recency, so the first compact rows are the best next picks for people and agents.
 
 Pick or claim the best next task directly:
@@ -200,6 +267,22 @@ tplane task claim-next \
   --actor agent-b \
   --priority urgent \
   --lease-seconds 120
+```
+
+Expected output:
+
+```text
+task:<task-id> high open ready epic=Workflow foundations owner=codex
+
+{
+  "ok": true,
+  "data": {
+    "task_id": "<task-id>",
+    "claim_id": "<claim-id>",
+    "actor": "agent-b",
+    "expires_at": "<timestamp>"
+  }
+}
 ```
 
 Bulk-triage multiple backlog items at once:
@@ -217,6 +300,16 @@ tplane task triage \
   --task-id <task-b-id>
 ```
 
+Expected output:
+
+```json
+{
+  "completed_task_ids": ["<task-a-id>", "<task-b-id>"],
+  "updated_task_ids": ["<task-a-id>", "<task-b-id>"],
+  "unchanged_task_ids": []
+}
+```
+
 Create a note:
 
 ```bash
@@ -225,6 +318,19 @@ tplane note add \
   --author agent-a \
   --title "Lease design note" \
   --body "Claims should expire and return tasks to the pool."
+```
+
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "note_id": "<note-id>",
+    "entity_ref": "note:<note-id>",
+    "title": "Lease design note"
+  }
+}
 ```
 
 Explore related entities without going through a task-only context path:
@@ -237,6 +343,19 @@ tplane entity show \
 tplane entity related \
   --entity-ref epic:<epic-id> \
   --format compact
+```
+
+Expected output:
+
+```text
+note:<note-id> Lease design note
+relations:
+- DOCUMENTS -> task:<task-id>
+
+epic:<epic-id> Workflow foundations
+relations:
+- IMPLEMENTS_EPIC <- task:<dependency-task-id>
+- IMPLEMENTS_EPIC <- task:<task-id>
 ```
 
 List or search notes without remembering UUIDs:
@@ -252,6 +371,13 @@ tplane note search \
   --format compact
 ```
 
+Expected output:
+
+```text
+note:<note-id> Lease design note
+note:<note-id> Lease design note
+```
+
 Create a Xanadu link between them:
 
 ```bash
@@ -260,6 +386,18 @@ tplane link xanadu \
   --actor agent-a \
   --from task:<task-id> \
   --to note:<note-id>
+```
+
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "relation": "xanadu_link",
+    "transclusion_id": "<transclusion-id>"
+  }
+}
 ```
 
 Update one side and let the shared transclusion propagate:
@@ -273,10 +411,48 @@ tplane note update \
   --body "A xanadu link should keep linked task text synchronized."
 ```
 
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "note_id": "<note-id>",
+    "title": "Lease semantics updated",
+    "transclusion_id": "<transclusion-id>"
+  }
+}
+```
+
 Inspect the task with graph-backed context:
 
 ```bash
 tplane task context --task-id <task-id>
+```
+
+Expected output:
+
+```json
+{
+  "ok": true,
+  "data": {
+    "task": {
+      "task_id": "<task-id>",
+      "title": "Lease semantics updated",
+      "transclusion_id": "<transclusion-id>"
+    },
+    "epic": {
+      "title": "Workflow foundations"
+    },
+    "dependencies": [],
+    "dependents": [],
+    "relations": [
+      {
+        "relation": "XANADU_LINK"
+      }
+    ]
+  }
+}
 ```
 
 Consume event history incrementally:
@@ -286,6 +462,18 @@ tplane events tail \
   --workspace shared-lab \
   --limit 25 \
   --format compact
+```
+
+Expected output:
+
+```text
+epic_recorded epic:<epic-id>
+task_offered task:<dependency-task-id>
+task_offered task:<task-id>
+note_recorded note:<note-id>
+xanadu_linked task:<task-id> -> note:<note-id>
+note_updated note:<note-id>
+task_claimed task:<task-id>
 ```
 
 ## CLI Surface
