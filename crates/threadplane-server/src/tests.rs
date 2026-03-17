@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     build_info::current_build_info,
+    handlers::normalized_list_limit,
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
@@ -38,6 +39,15 @@ fn normalized_lease_seconds_enforces_minimum(
         normalized_lease_seconds(requested_lease_seconds, default_lease_seconds),
         expected
     );
+}
+
+#[rstest]
+#[case(None, 25)]
+#[case(Some(0), 1)]
+#[case(Some(7), 7)]
+#[case(Some(500), 200)]
+fn normalized_list_limit_clamps_bounds(#[case] requested: Option<i64>, #[case] expected: i64) {
+    assert_eq!(normalized_list_limit(requested), expected);
 }
 
 #[rstest]

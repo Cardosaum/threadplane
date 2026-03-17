@@ -16,8 +16,8 @@ use threadplane_core::{
     compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
     AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
     CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
-    SERVICE_NAME,
+    ReleaseTaskRequest, ServiceSnapshot, TaskListEntry, ThreadplaneConfig, UpdateNoteRequest,
+    UpdateTaskRequest, ApiEnvelope, SERVICE_NAME,
 };
 
 use crate::{
@@ -370,6 +370,16 @@ struct ListTasks {
     #[arg(long, help = "Optional epic filter")]
     epic_id: Option<Uuid>,
 
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: TaskListOutput,
+
+    #[arg(long, help = "Maximum number of tasks to return")]
+    limit: Option<i64>,
+
     #[arg(long, help = "Only include tasks whose dependencies are all completed")]
     ready_only: bool,
 
@@ -378,6 +388,13 @@ struct ListTasks {
 
     #[arg(long, help = "Workspace name")]
     workspace: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum TaskListOutput {
+    Compact,
+    #[default]
+    Json,
 }
 
 #[derive(Debug, Args)]
@@ -648,25 +665,16 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
             print_value(&response)
         }
         TaskSubcommand::List(task) => {
-            let mut query = Vec::new();
-            if let Some(status) = task.status {
-                query.push(format!("status={}", status.as_str()));
-            }
-            if let Some(epic_id) = task.epic_id {
-                query.push(format!("epic_id={epic_id}"));
-            }
-            if task.ready_only {
-                query.push("ready_only=true".to_owned());
-            }
+            let path = task_list_path(&task);
+            let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
 
-            let suffix = if query.is_empty() {
-                String::new()
-            } else {
-                format!("?{}", query.join("&"))
-            };
-            let path = format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
+            match task.format {
+                TaskListOutput::Compact => {
+                    print!("{}", render_task_list_compact(&response.data));
+                    Ok(())
+                }
+                TaskListOutput::Json => print_value(&response),
+            }
         }
         TaskSubcommand::Offer(task) => {
             let request = OfferTaskRequest {
@@ -733,4 +741,76 @@ pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<Str
         comparison.server.git_commit.as_deref().unwrap_or("unknown"),
         changed_fields,
     ))
+}
+
+fn compact_claim_label(entry: &TaskListEntry) -> String {
+    entry
+        .active_claim
+        .as_ref()
+        .map_or_else(|| "claim=open".to_owned(), |claim| format!("claim={}", claim.actor))
+}
+
+fn compact_epic_label(entry: &TaskListEntry) -> String {
+    entry
+        .epic
+        .as_ref()
+        .map_or_else(|| "epic=none".to_owned(), |epic| format!("epic={}", epic.title))
+}
+
+pub(crate) fn render_task_list_compact(entries: &[TaskListEntry]) -> String {
+    if entries.is_empty() {
+        return "no tasks\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} | {} | status={} | {} | deps={} | dependents={} | {} | {}",
+                short_task_id(&entry.task.task_id),
+                entry.task.title,
+                entry.task.status,
+                if entry.ready { "ready" } else { "blocked" },
+                entry.dependencies.len(),
+                entry.dependents.len(),
+                compact_epic_label(entry),
+                compact_claim_label(entry),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
+fn short_task_id(task_id: &Uuid) -> String {
+    task_id
+        .to_string()
+        .split('-')
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn task_list_path(task: &ListTasks) -> String {
+    let mut query = Vec::new();
+    if let Some(status) = task.status {
+        query.push(format!("status={}", status.as_str()));
+    }
+    if let Some(epic_id) = task.epic_id {
+        query.push(format!("epic_id={epic_id}"));
+    }
+    if let Some(limit) = task.limit {
+        query.push(format!("limit={limit}"));
+    }
+    if task.ready_only {
+        query.push("ready_only=true".to_owned());
+    }
+
+    let suffix = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", query.join("&"))
+    };
+
+    format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
 }

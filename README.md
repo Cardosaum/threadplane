@@ -145,7 +145,9 @@ cargo run -p threadplane-cli -- task complete \
 cargo run -p threadplane-cli -- task list \
   --workspace shared-lab \
   --status open \
-  --ready-only
+  --ready-only \
+  --limit 5 \
+  --format compact
 ```
 
 Create a note:
@@ -203,6 +205,7 @@ Current commands:
 - `task depend`
 - `task dag`
 - `task list`
+  - supports `--limit` and `--format compact` for concise ready queues
 - `task update`
 - `task claim`
 - `task release`

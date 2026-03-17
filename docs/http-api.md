@@ -122,6 +122,7 @@ Request:
 - List tasks with optional filters:
   - `status=open|claimed|completed`
   - `epic_id=<uuid>`
+  - `limit=1..200`
   - `ready_only=true|false`
 
 `GET /v1/workspaces/{workspace}/tasks/open`

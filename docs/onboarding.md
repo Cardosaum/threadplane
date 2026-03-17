@@ -94,7 +94,9 @@ cargo run -p threadplane-cli -- task dag --task-id <task-id>
 cargo run -p threadplane-cli -- task list \
   --workspace shared-lab \
   --status open \
-  --ready-only
+  --ready-only \
+  --limit 5 \
+  --format compact
 ```
 
 Create a note:

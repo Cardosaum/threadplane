@@ -153,6 +153,18 @@ ready_tasks_json="$(
 [[ "$(jq -r '.data | length' <<<"$ready_tasks_json")" == "1" ]]
 [[ "$(jq -r '.data[0].task.task_id' <<<"$ready_tasks_json")" == "$task_id" ]]
 
+compact_ready_queue="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --status open \
+        --ready-only \
+        --limit 1 \
+        --format compact
+)"
+[[ "$compact_ready_queue" == *"Canonical lease wording"* || "$compact_ready_queue" == *"Investigate tuple leases"* ]]
+[[ "$compact_ready_queue" == *"ready"* ]]
+
 note_json="$(
     cargo run -q -p threadplane-cli -- \
         note add \

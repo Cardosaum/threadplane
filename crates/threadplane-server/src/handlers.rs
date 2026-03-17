@@ -42,6 +42,9 @@ use threadplane_core::{
     XANADU_RELATION,
 };
 
+const DEFAULT_LIST_LIMIT: i64 = 25;
+const MAX_LIST_LIMIT: i64 = 200;
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ListQuery {
     limit: Option<i64>,
@@ -50,6 +53,7 @@ pub(crate) struct ListQuery {
 #[derive(Debug, Deserialize)]
 pub(crate) struct TaskListQuery {
     epic_id: Option<Uuid>,
+    limit: Option<i64>,
     ready_only: Option<bool>,
     status: Option<String>,
 }
@@ -878,7 +882,7 @@ pub(crate) async fn list_events(
     Path(workspace): Path<String>,
     Query(query): Query<ListQuery>,
 ) -> AppResult<Vec<EventRecord>> {
-    let limit = query.limit.unwrap_or(25).clamp(1, 200);
+    let limit = normalized_list_limit(query.limit);
     let rows = fetch_event_rows_for_workspace(state.pool(), &workspace, limit).await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
     Ok(Json(ApiEnvelope { ok: true, data }))
@@ -898,6 +902,7 @@ pub(crate) async fn list_tasks(
     Path(workspace): Path<String>,
     Query(query): Query<TaskListQuery>,
 ) -> AppResult<Vec<TaskListEntry>> {
+    let limit = normalized_list_limit(query.limit);
     let rows = fetch_tasks_for_listing(
         state.pool(),
         &workspace,
@@ -906,7 +911,8 @@ pub(crate) async fn list_tasks(
         query.ready_only.unwrap_or(false),
     )
     .await?;
-    let data = build_task_list_entries(state.pool(), rows).await?;
+    let limited_rows = truncate_results(rows, limit);
+    let data = build_task_list_entries(state.pool(), limited_rows).await?;
     Ok(Json(ApiEnvelope { ok: true, data }))
 }
 
@@ -961,4 +967,16 @@ pub(crate) async fn task_dag(
     };
 
     Ok(Json(ApiEnvelope { ok: true, data }))
+}
+
+#[inline]
+#[must_use]
+pub(crate) fn normalized_list_limit(limit: Option<i64>) -> i64 {
+    limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT)
+}
+
+fn truncate_results<T>(items: Vec<T>, limit: i64) -> Vec<T> {
+    let max_items = usize::try_from(limit).map_or(usize::MAX, |value| value);
+
+    items.into_iter().take(max_items).collect()
 }
