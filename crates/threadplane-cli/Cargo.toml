@@ -10,6 +10,10 @@ repository = "https://github.com/Cardosaum/threadplane"
 rust-version.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "tplane"
+path = "src/main.rs"
+
 [lints]
 workspace = true
 

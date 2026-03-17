@@ -27,7 +27,7 @@ cargo run -p threadplane-cli -- config show
 - `.env`
   Used by Docker Compose for PostgreSQL and Neo4j credentials.
 - `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml`
-  Used by `threadplane-server` and `threadplane-cli`.
+  Used by `threadplane-server` and `tplane`.
 
 The generated config lives in your XDG config home, not in the repo worktree.
 

@@ -58,7 +58,7 @@ Most agent tooling gets one part right and leaves the rest as an exercise:
 That creates:
 
 - `.env` for Docker Compose and local database credentials
-- `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml` for `threadplane-server` and `threadplane-cli`
+- `${XDG_CONFIG_HOME:-$HOME/.config}/threadplane/config.toml` for `threadplane-server` and `tplane`
 
 2. Start PostgreSQL and Neo4j:
 
@@ -82,6 +82,8 @@ cargo run -p threadplane-cli -- projection status
 cargo run -p threadplane-cli -- config show
 cargo run -p threadplane-cli -- build compare
 ```
+
+The compiled CLI binary name is `tplane`, so after `cargo build -p threadplane-cli` you can also run `./target/debug/tplane`.
 
 `scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
 It also includes the persisted graph replay watermark and pending projection count, and `projection status` exposes the same data directly when you want an operational read instead of the broader product summary.

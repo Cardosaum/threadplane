@@ -23,7 +23,6 @@ use threadplane_core::{
     ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
     TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
     ThreadplaneConfig, ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest,
-    SERVICE_NAME,
 };
 
 use crate::{
@@ -34,10 +33,10 @@ use crate::{
 
 #[derive(Debug, Parser)]
 #[command(
-    name = SERVICE_NAME,
+    name = "tplane",
     version,
     about = "Shared memory and coordination CLI for people and AI agents",
-    long_about = "threadplane-cli talks to threadplane-server so people and agents can share tasks, notes, links, claims, and graph-backed context through one internet-reachable control plane."
+    long_about = "tplane talks to threadplane-server so people and agents can share tasks, notes, links, claims, and graph-backed context through one internet-reachable control plane."
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]

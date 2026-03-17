@@ -8,7 +8,7 @@ use threadplane_core::{build_info, BuildInfo};
 const BUILD_PROFILE: &str = env!("THREADPLANE_BUILD_PROFILE");
 const GIT_COMMIT: Option<&str> = option_env!("THREADPLANE_GIT_COMMIT");
 const GIT_DIRTY_RAW: &str = env!("THREADPLANE_GIT_DIRTY");
-const SERVICE: &str = env!("CARGO_PKG_NAME");
+const SERVICE: &str = env!("CARGO_BIN_NAME");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[must_use]
