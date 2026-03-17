@@ -88,6 +88,42 @@ pub struct ThreadplaneConfig {
     pub server: ServerConfig,
 }
 
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CliConfigOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ServerConfigOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bind: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_url: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_lease_seconds: Option<i64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neo4j_password: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neo4j_uri: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neo4j_user: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ThreadplaneConfigOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli: Option<CliConfigOverrides>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerConfigOverrides>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ConfigDiscovery {
     pub env_override: Option<PathBuf>,
@@ -138,8 +174,26 @@ pub fn load_threadplane_config() -> Result<ThreadplaneConfig, ThreadplaneError> 
 pub fn load_threadplane_config_with_path(
     config_path: Option<&Path>,
 ) -> Result<LoadedThreadplaneConfig, ThreadplaneError> {
+    load_threadplane_config_with_overrides(config_path, &ThreadplaneConfigOverrides::default())
+}
+
+#[inline]
+/// Loads layered runtime configuration from defaults, optional TOML, environment overrides,
+/// and serialized runtime overrides.
+///
+/// `overrides` should be a sparse serializable structure where unset values are omitted, such as
+/// CLI flags represented as `Option<T>` with `skip_serializing_if`.
+///
+/// # Errors
+///
+/// Returns an error when the optional config file cannot be parsed or when
+/// the gathered values cannot be deserialized into [`ThreadplaneConfig`].
+pub fn load_threadplane_config_with_overrides(
+    config_path: Option<&Path>,
+    overrides: &ThreadplaneConfigOverrides,
+) -> Result<LoadedThreadplaneConfig, ThreadplaneError> {
     let discovery = discover_threadplane_config(config_path);
-    let figment = figment_with_discovery(&discovery);
+    let figment = threadplane_config_figment(&discovery, overrides);
     let config = figment.extract().context(ConfigLoad)?;
 
     Ok(LoadedThreadplaneConfig { config, discovery })
@@ -163,15 +217,19 @@ pub fn discover_threadplane_config(config_path: Option<&Path>) -> ConfigDiscover
 
 #[inline]
 #[must_use]
-fn figment_with_discovery(discovery: &ConfigDiscovery) -> Figment {
+fn threadplane_config_figment(
+    discovery: &ConfigDiscovery,
+    overrides: &ThreadplaneConfigOverrides,
+) -> Figment {
     let base_figment = Figment::from(Serialized::defaults(ThreadplaneConfig::default()));
     let layered_figment = if let Some(config_path) = discovery.selected_path.as_ref() {
         base_figment.merge(Toml::file(config_path))
     } else {
         base_figment
     };
+    let env_figment = layered_figment.merge(Env::prefixed(ENV_PREFIX).split("__"));
 
-    layered_figment.merge(Env::prefixed(ENV_PREFIX).split("__"))
+    env_figment.merge(Serialized::defaults(overrides))
 }
 
 #[inline]

@@ -16,11 +16,11 @@ use uuid::Uuid;
 use threadplane_core::{
     compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
     AddTaskDependencyRequest, ApiEnvelope, BuildComparison, ClaimTaskRequest,
-    CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
-    ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata,
-    TaskPriority, TaskRecord, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
-    SERVICE_NAME,
+    CliConfigOverrides, CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest,
+    CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest, ProjectionStatus,
+    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary,
+    TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, ThreadplaneConfig,
+    ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
 };
 
 use crate::{
@@ -57,6 +57,19 @@ pub(crate) struct Cli {
         help = "HTTP base URL for threadplane-server. Overrides cli.url from config."
     )]
     server: Option<String>,
+}
+
+impl Cli {
+    pub(crate) fn config_overrides(&self) -> ThreadplaneConfigOverrides {
+        let cli = self.server.as_ref().map(|url| CliConfigOverrides {
+            url: Some(url.clone()),
+        });
+
+        ThreadplaneConfigOverrides {
+            cli,
+            ..ThreadplaneConfigOverrides::default()
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -626,11 +639,10 @@ pub(crate) fn execute(
 ) -> Result<()> {
     let Cli {
         command: root_command,
-        server: server_override,
         idempotency_key: command_idempotency_key,
         ..
     } = cli;
-    let server = server_override.unwrap_or_else(|| config.cli.url.clone());
+    let server = config.cli.url.clone();
     let idempotency_key = command_idempotency_key.as_deref();
 
     match root_command {

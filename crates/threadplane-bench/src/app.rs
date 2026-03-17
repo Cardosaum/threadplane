@@ -10,7 +10,7 @@ use clap::Parser as _;
 use reqwest::blocking::Client;
 use snafu::ResultExt as _;
 
-use threadplane_core::{load_threadplane_config_with_path, BuildInfo, ServiceSnapshot};
+use threadplane_core::{load_threadplane_config_with_overrides, BuildInfo, ServiceSnapshot};
 
 use crate::{
     build_info::current_build_info,
@@ -22,13 +22,14 @@ use crate::{
 
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
-    let loaded_config =
-        load_threadplane_config_with_path(cli.config.as_deref()).context(ConfigLoad)?;
+    let config_overrides = cli.config_overrides();
+    let loaded_config = load_threadplane_config_with_overrides(
+        cli.config.as_deref(),
+        &config_overrides,
+    )
+    .context(ConfigLoad)?;
     let client = build_http_client()?;
-    let server = cli
-        .server
-        .clone()
-        .unwrap_or_else(|| loaded_config.config.cli.url.clone());
+    let server = loaded_config.config.cli.url;
 
     match cli.command {
         Command::Run(run_command) => {

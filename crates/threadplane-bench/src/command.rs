@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use threadplane_core::{CliConfigOverrides, ThreadplaneConfigOverrides};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +27,19 @@ pub(crate) struct Cli {
         help = "HTTP base URL for threadplane-server. Overrides cli.url from config."
     )]
     pub(crate) server: Option<String>,
+}
+
+impl Cli {
+    pub(crate) fn config_overrides(&self) -> ThreadplaneConfigOverrides {
+        let cli = self.server.as_ref().map(|url| CliConfigOverrides {
+            url: Some(url.clone()),
+        });
+
+        ThreadplaneConfigOverrides {
+            cli,
+            ..ThreadplaneConfigOverrides::default()
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

@@ -280,6 +280,7 @@ Global options:
 3. repo-local `etc/config.toml`
 4. system config at `/etc/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
+6. CLI runtime overrides such as `--server`
 
 See [etc/config.toml.example](./etc/config.toml.example) for the file format.
 

@@ -11,6 +11,7 @@ The CLI and server start from built-in defaults, then layer config in this order
 3. repo-local `etc/config.toml`
 4. system config at `/etc/threadplane/config.toml`
 5. `THREADPLANE__...` nested environment overrides
+6. CLI runtime overrides such as `--server`
 
 Inspect the resolved config and discovery order with:
 
@@ -61,6 +62,8 @@ Override just the server URL:
 ```bash
 cargo run -p threadplane-cli -- --server http://127.0.0.1:4010 scope
 ```
+
+That flag is now applied through the same Figment pipeline as file and env config, so the resolved `config show` output reflects the final layered value instead of a post-load ad hoc override.
 
 Override a nested value through the environment:
 

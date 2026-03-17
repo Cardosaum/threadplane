@@ -6,7 +6,7 @@
 use clap::Parser as _;
 use snafu::ResultExt as _;
 
-use threadplane_core::load_threadplane_config_with_path;
+use threadplane_core::load_threadplane_config_with_overrides;
 
 use crate::{
     command::{execute, Cli},
@@ -16,8 +16,12 @@ use crate::{
 
 pub(crate) fn run() -> Result<()> {
     let cli = Cli::parse();
-    let loaded_config =
-        load_threadplane_config_with_path(cli.config.as_deref()).context(ConfigLoad)?;
+    let config_overrides = cli.config_overrides();
+    let loaded_config = load_threadplane_config_with_overrides(
+        cli.config.as_deref(),
+        &config_overrides,
+    )
+    .context(ConfigLoad)?;
     let client = build_http_client()?;
 
     execute(cli, &loaded_config.config, &loaded_config.discovery, &client)

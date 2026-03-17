@@ -14,10 +14,11 @@ use uuid::Uuid;
 
 use crate::{
     build_info, compare_build_info, default_config_path, default_system_config_path,
-    discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_path,
-    normalize_task_labels, normalize_task_owner, note_entity_ref, parse_entity_ref,
-    relation_type, scope_summary, service_snapshot, task_entity_ref, EntityRef, EventKind,
-    TaskPriority, ThreadplaneConfig, ENV_PREFIX,
+    discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_overrides,
+    load_threadplane_config_with_path, normalize_task_labels, normalize_task_owner,
+    note_entity_ref, parse_entity_ref, relation_type, scope_summary, service_snapshot,
+    task_entity_ref, CliConfigOverrides, EntityRef, EventKind, TaskPriority, ThreadplaneConfig,
+    ThreadplaneConfigOverrides, ENV_PREFIX,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -225,6 +226,46 @@ default_lease_seconds = 42
     }
     if loaded.discovery.selected_path != Some(config_path) {
         return Err(Box::new(io::Error::other("unexpected selected_path")));
+    }
+
+    fs::remove_dir_all(config_dir)?;
+    Ok(())
+}
+
+#[test]
+fn load_threadplane_config_with_overrides_applies_sparse_runtime_layer()
+-> Result<(), Box<dyn Error>> {
+    let config_dir = temp_config_dir();
+    let config_path = config_dir.join("config.toml");
+    let config_body = r#"
+[cli]
+url = "http://127.0.0.1:4123"
+
+[server]
+bind = "127.0.0.1:4321"
+default_lease_seconds = 42
+"#;
+    fs::create_dir_all(&config_dir)?;
+    fs::write(&config_path, config_body)?;
+
+    let overrides = ThreadplaneConfigOverrides {
+        cli: Some(CliConfigOverrides {
+            url: Some("http://127.0.0.1:4999".to_owned()),
+        }),
+        ..ThreadplaneConfigOverrides::default()
+    };
+    let loaded =
+        load_threadplane_config_with_overrides(Some(config_path.as_path()), &overrides)?;
+
+    if loaded.config.cli.url != "http://127.0.0.1:4999" {
+        return Err(Box::new(io::Error::other(
+            "runtime override did not win over file config",
+        )));
+    }
+    if loaded.config.server.bind != "127.0.0.1:4321" {
+        return Err(Box::new(io::Error::other(
+            "sparse runtime override should not disturb other config keys",
+        )));
     }
 
     fs::remove_dir_all(config_dir)?;
