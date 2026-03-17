@@ -15,10 +15,13 @@ http://127.0.0.1:4000
 - Returns the high-level service snapshot, including build metadata and dirty-worktree state for the running server binary.
 
 `GET /healthz`
-- Returns a simple health payload plus build metadata and dirty-worktree state for the running server binary.
+- Returns a simple health payload plus build metadata, dirty-worktree state, and current graph replay status for the running server binary.
 
 `GET /scope`
-- Returns the current POC summary plus build metadata and dirty-worktree state for the running server binary.
+- Returns the current POC summary plus build metadata, dirty-worktree state, and current graph replay status for the running server binary.
+
+`GET /v1/projections/graph`
+- Returns the persisted replay watermark and backlog counters for the Neo4j graph projection.
 
 ## Notes
 

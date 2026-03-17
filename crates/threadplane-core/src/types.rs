@@ -79,6 +79,17 @@ pub struct ServiceSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectionStatus {
+    pub caught_up: bool,
+    pub last_event_created_at: Option<String>,
+    pub last_event_id: Option<Uuid>,
+    pub pending_events: i64,
+    pub projected_events: i64,
+    pub projection_name: String,
+    pub total_events: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateNoteRequest {
     pub author: String,
     pub body: String,

@@ -19,7 +19,7 @@ use threadplane_core::{
     ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
     CreateXanaduLinkRequest, OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskContext,
     TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
-    ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
+    ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest, ProjectionStatus, SERVICE_NAME,
 };
 
 use crate::{
@@ -60,6 +60,7 @@ enum Command {
     Events(EventsCommand),
     Link(LinkCommand),
     Note(NoteCommand),
+    Projection(ProjectionCommand),
     #[command(about = "Show the product and architecture summary exposed by the service")]
     Scope,
     Task(TaskCommand),
@@ -216,6 +217,19 @@ struct AddXanaduLink {
 struct NoteCommand {
     #[command(subcommand)]
     command: NoteSubcommand,
+}
+
+#[derive(Debug, Args)]
+#[command(about = "Inspect graph projection replay status")]
+struct ProjectionCommand {
+    #[command(subcommand)]
+    command: ProjectionSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ProjectionSubcommand {
+    #[command(about = "Show the persisted replay watermark for the graph projection")]
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -607,6 +621,7 @@ pub(crate) fn execute(cli: Cli, config: &ThreadplaneConfig, client: &Client) -> 
         Command::Events(command) => handle_events(client, &server, command)?,
         Command::Link(command) => handle_link(client, &server, command)?,
         Command::Note(command) => handle_note(client, &server, command)?,
+        Command::Projection(command) => handle_projection(client, &server, &command)?,
         Command::Scope => handle_scope(client, &server)?,
         Command::Task(command) => handle_task(client, &server, command)?,
     }
@@ -757,6 +772,16 @@ fn handle_note(client: &Client, server: &str, command: NoteCommand) -> Result<()
             };
             let response: serde_json::Value =
                 post_json(client, server, "/v1/notes/update", &request)?;
+            print_value(&response)
+        }
+    }
+}
+
+fn handle_projection(client: &Client, server: &str, command: &ProjectionCommand) -> Result<()> {
+    match command.command {
+        ProjectionSubcommand::Status => {
+            let response: ApiEnvelope<ProjectionStatus> =
+                get_json(client, server, "/v1/projections/graph")?;
             print_value(&response)
         }
     }

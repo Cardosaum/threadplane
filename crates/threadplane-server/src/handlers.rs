@@ -16,21 +16,23 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     build_info::current_build_info,
-    error::{AppResult, ThreadplaneServerError},
+    error::{AppResult, ServerResult, ThreadplaneServerError},
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
     projections::{
         fetch_task_relations, project_claim, project_epic, project_link, project_note,
         project_task, project_task_dependency_by_id, project_task_supporting_entities,
         reproject_transclusion_group,
     },
+    replay::GRAPH_PROJECTION_NAME,
     storage::{
         append_event, append_task_dependency, build_task_list_entries, fetch_active_claim,
         fetch_active_claim_tx, fetch_dependency_chain, fetch_dependent_chain,
         fetch_direct_dependencies, fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx,
         fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_rows_for_workspace,
-        fetch_note_by_id, fetch_note_by_id_tx, fetch_task_by_id, fetch_task_by_id_tx,
-        fetch_tasks_for_listing, prepare_xanadu_group, sync_transclusion_members, task_is_ready,
-        unique_task_ids, update_transclusion_group, TaskListFilters,
+        fetch_note_by_id, fetch_note_by_id_tx, fetch_projection_status, fetch_task_by_id,
+        fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group,
+        sync_transclusion_members, task_is_ready, unique_task_ids, update_transclusion_group,
+        TaskListFilters,
     },
 };
 use threadplane_core::{
@@ -38,9 +40,9 @@ use threadplane_core::{
     service_snapshot, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimTaskRequest,
     CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest,
     EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskListEntry,
-    TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION,
-    XANADU_RELATION,
+    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest,
+    DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -62,16 +64,43 @@ pub(crate) struct TaskListQuery {
     status: Option<String>,
 }
 
+fn with_projection_status(
+    mut payload: Value,
+    projection: ProjectionStatus,
+) -> Result<Value, serde_json::Error> {
+    if let Value::Object(ref mut object) = payload {
+        object.insert(
+            "projection".to_owned(),
+            serde_json::to_value(projection)?,
+        );
+    }
+
+    Ok(payload)
+}
+
 pub(crate) async fn root() -> Json<ServiceSnapshot> {
     Json(service_snapshot(current_build_info()))
 }
 
-pub(crate) async fn healthz() -> Json<Value> {
-    Json(health_summary(&current_build_info()))
+pub(crate) async fn healthz(State(state): State<AppState>) -> ServerResult<Json<Value>> {
+    let projection = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+    Ok(Json(with_projection_status(
+        health_summary(&current_build_info()),
+        projection,
+    )?))
 }
 
-pub(crate) async fn scope() -> Json<Value> {
-    Json(scope_summary(&current_build_info()))
+pub(crate) async fn scope(State(state): State<AppState>) -> ServerResult<Json<Value>> {
+    let projection = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+    Ok(Json(with_projection_status(
+        scope_summary(&current_build_info()),
+        projection,
+    )?))
+}
+
+pub(crate) async fn projection_status(State(state): State<AppState>) -> AppResult<ProjectionStatus> {
+    let data = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+    Ok(Json(ApiEnvelope { ok: true, data }))
 }
 
 pub(crate) async fn create_epic(

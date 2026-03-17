@@ -14,6 +14,7 @@ pub use self::types::{
     BuildComparison, BuildFieldDifference, BuildInfo, ClaimTaskRequest, CompleteTaskRequest,
     CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EntityRef, EpicRecord,
     EventEnvelope, EventKind, EventRecord, GraphRelation, LinkRecord, NoteRecord,
+    ProjectionStatus,
     OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
     TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary,
     UpdateNoteRequest, UpdateTaskRequest,

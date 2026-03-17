@@ -82,6 +82,14 @@ until curl -sf "http://127.0.0.1:${server_port}/healthz" >/dev/null; do
     sleep 1
 done
 
+initial_projection_status_json="$(
+    cargo run -q -p threadplane-cli -- \
+        projection status
+)"
+[[ "$(jq -r '.data.projection_name' <<<"$initial_projection_status_json")" == "neo4j_graph" ]]
+[[ "$(jq -r '.data.caught_up' <<<"$initial_projection_status_json")" == "true" ]]
+[[ "$(jq -r '.data.total_events' <<<"$initial_projection_status_json")" == "0" ]]
+
 epic_json="$(
     cargo run -q -p threadplane-cli -- \
         epic add \
@@ -443,6 +451,30 @@ events_json="$(
 [[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_completed" ]]
 [[ "$(jq -r '.data[] | select(.kind == "task_dependency_declared") | .kind' <<<"$events_json" | head -n1)" == "task_dependency_declared" ]]
 [[ "$(jq -r '.data[] | select(.kind == "epic_recorded") | .kind' <<<"$events_json" | head -n1)" == "epic_recorded" ]]
+
+for _attempt in $(seq 1 20); do
+    projection_status_json="$(
+        cargo run -q -p threadplane-cli -- \
+            projection status
+    )"
+    if [[ "$(jq -r '.data.caught_up' <<<"$projection_status_json")" == "true" ]] \
+        && [[ "$(jq -r '.data.total_events' <<<"$projection_status_json")" != "0" ]]; then
+        break
+    fi
+    sleep 1
+done
+[[ "$(jq -r '.data.projection_name' <<<"$projection_status_json")" == "neo4j_graph" ]]
+[[ "$(jq -r '.data.caught_up' <<<"$projection_status_json")" == "true" ]]
+[[ "$(jq -r '.data.total_events' <<<"$projection_status_json")" != "0" ]]
+[[ "$(jq -r '.data.pending_events' <<<"$projection_status_json")" == "0" ]]
+
+scope_json="$(
+    cargo run -q -p threadplane-cli -- \
+        scope
+)"
+[[ "$(jq -r '.projection.projection_name' <<<"$scope_json")" == "neo4j_graph" ]]
+[[ "$(jq -r '.projection.caught_up' <<<"$scope_json")" == "true" ]]
+[[ "$(jq -r '.projection.total_events' <<<"$scope_json")" != "0" ]]
 
 echo "threadplane e2e ok"
 echo "workspace=$WORKSPACE"

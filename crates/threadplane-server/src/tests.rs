@@ -12,7 +12,10 @@ use crate::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
     migration::{INITIAL_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL},
-    storage::{event_kind_name, parse_event_kind, task_priority_rank, ProjectionCursor},
+    storage::{
+        build_projection_status, event_kind_name, parse_event_kind, task_priority_rank,
+        ProjectionCursor,
+    },
 };
 use threadplane_core::{EventKind, TaskPriority};
 
@@ -117,6 +120,30 @@ fn projection_offsets_migration_covers_replay_cursor_storage(#[case] expected_fr
 #[case(TaskPriority::Urgent, 3)]
 fn task_priority_rank_orders_ready_queues(#[case] priority: TaskPriority, #[case] expected: u8) {
     assert_eq!(task_priority_rank(priority), expected);
+}
+
+#[test]
+fn projection_status_marks_caught_up_when_pending_is_zero() {
+    let created_at = Utc::now();
+    let cursor = ProjectionCursor::new(created_at, Uuid::nil());
+    let status = build_projection_status("neo4j_graph", Some(cursor), 12, 0);
+
+    assert!(status.caught_up);
+    assert_eq!(status.projected_events, 12);
+    assert_eq!(status.pending_events, 0);
+    assert_eq!(status.last_event_id, Some(Uuid::nil()));
+    assert_eq!(status.projection_name, "neo4j_graph");
+}
+
+#[test]
+fn projection_status_reports_full_backlog_without_cursor() {
+    let status = build_projection_status("neo4j_graph", None, 7, 7);
+
+    assert!(!status.caught_up);
+    assert_eq!(status.projected_events, 0);
+    assert_eq!(status.pending_events, 7);
+    assert_eq!(status.last_event_created_at, None);
+    assert_eq!(status.last_event_id, None);
 }
 
 proptest::proptest! {
