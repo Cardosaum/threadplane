@@ -925,6 +925,14 @@ pub(crate) async fn list_open_tasks(
     Ok(Json(ApiEnvelope { ok: true, data }))
 }
 
+pub(crate) async fn show_task(
+    State(state): State<AppState>,
+    Path(task_id): Path<Uuid>,
+) -> AppResult<TaskRecord> {
+    let data = TaskRecord::from(fetch_task_by_id(state.pool(), task_id).await?);
+    Ok(Json(ApiEnvelope { ok: true, data }))
+}
+
 pub(crate) async fn task_context(
     State(state): State<AppState>,
     Path(task_id): Path<Uuid>,

@@ -116,6 +116,14 @@ task_json="$(
 task_id="$(jq -r '.data.task_id' <<<"$task_json")"
 task_ref="$(jq -r '.data.entity_ref' <<<"$task_json")"
 
+task_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task show \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.title' <<<"$task_show_json")" == "Investigate tuple leases" ]]
+[[ "$(jq -r '.data.details' <<<"$task_show_json")" == "Need a shared lease-backed claim flow with dependency tracking." ]]
+
 task_list_json="$(
     cargo run -q -p threadplane-cli -- \
         task list \

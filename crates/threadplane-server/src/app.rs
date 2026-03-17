@@ -32,8 +32,8 @@ use crate::{
     handlers::{
         add_link, add_task_dependency, add_xanadu_link, claim_task, complete_task, create_epic,
         create_note, healthz, list_epics, list_events, list_open_tasks, list_tasks, offer_task,
-        release_task, root, scope, show_epic, show_note, task_context, task_dag, update_note,
-        update_task,
+        release_task, root, scope, show_epic, show_note, show_task, task_context, task_dag,
+        update_note, update_task,
     },
     lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
     storage::ensure_schema,
@@ -241,6 +241,7 @@ fn task_routes() -> Router<AppState> {
         .route("/offers", post(offer_task))
         .route("/release", post(release_task))
         .route("/update", post(update_task))
+        .route("/{task_id}", get(show_task))
         .route("/{task_id}/context", get(task_context))
         .route("/{task_id}/dag", get(task_dag))
 }

@@ -17,7 +17,7 @@ use threadplane_core::{
     compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
     AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
     CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskListEntry, ThreadplaneConfig,
+    ReleaseTaskRequest, ServiceSnapshot, TaskListEntry, TaskRecord, ThreadplaneConfig,
     UpdateNoteRequest, UpdateTaskRequest, ApiEnvelope, SERVICE_NAME,
 };
 
@@ -291,6 +291,8 @@ enum TaskSubcommand {
     Offer(OfferTask),
     #[command(about = "Release an active claim and return the task to the pool")]
     Release(ReleaseTask),
+    #[command(about = "Fetch a task by ID without graph context")]
+    Show(ShowTask),
     #[command(about = "Apply the same epic assignment and/or completion to multiple tasks")]
     Triage(TriageTasks),
     #[command(about = "Update a task and propagate through Xanadu links when present")]
@@ -431,6 +433,12 @@ struct ReleaseTask {
 
     #[arg(long, help = "Workspace name")]
     workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct ShowTask {
+    #[arg(long, help = "Task UUID")]
+    task_id: Uuid,
 }
 
 #[derive(Debug, Args)]
@@ -735,6 +743,11 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
                 post_json(client, server, "/v1/tasks/release", &request)?;
             print_value(&response)
         }
+        TaskSubcommand::Show(task) => {
+            let path = format!("/v1/tasks/{}", task.task_id);
+            let response: serde_json::Value = get_json(client, server, &path)?;
+            print_value(&response)
+        }
         TaskSubcommand::Triage(task) => {
             let response = triage_tasks(client, server, &task)?;
             print_value(&response)
@@ -755,9 +768,9 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
     }
 }
 
-fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<TaskContext> {
-    let path = format!("/v1/tasks/{task_id}/context");
-    let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
+fn fetch_task_summary(client: &Client, server: &str, task_id: Uuid) -> Result<TaskRecord> {
+    let path = format!("/v1/tasks/{task_id}");
+    let response: ApiEnvelope<TaskRecord> = get_json(client, server, &path)?;
     Ok(response.data)
 }
 
@@ -875,17 +888,17 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
     let mut updated_task_ids = Vec::new();
 
     for task_id in &task_ids {
-        let context = fetch_task_context(client, server, *task_id)?;
+        let task_record = fetch_task_summary(client, server, *task_id)?;
         let mut changed = false;
 
         if let Some(epic_id) = task.epic_id {
-            if context.task.epic_id != Some(epic_id) {
+            if task_record.epic_id != Some(epic_id) {
                 let request = UpdateTaskRequest {
                     workspace: task.workspace.clone(),
                     actor: task.actor.clone(),
                     task_id: *task_id,
-                    title: context.task.title.clone(),
-                    details: context.task.details.clone(),
+                    title: task_record.title.clone(),
+                    details: task_record.details.clone(),
                     epic_id: Some(epic_id),
                 };
                 let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
@@ -894,7 +907,7 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
             }
         }
 
-        if task.complete && context.task.status != "completed" {
+        if task.complete && task_record.status != "completed" {
             let request = CompleteTaskRequest {
                 workspace: task.workspace.clone(),
                 actor: task.actor.clone(),

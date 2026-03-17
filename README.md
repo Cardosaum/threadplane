@@ -131,6 +131,7 @@ cargo run -p threadplane-cli -- task offer \
 Inspect the DAG view:
 
 ```bash
+cargo run -p threadplane-cli -- task show --task-id <task-id>
 cargo run -p threadplane-cli -- task dag --task-id <task-id>
 ```
 
@@ -221,6 +222,7 @@ Current commands:
 - `task update`
 - `task claim`
 - `task release`
+- `task show`
 - `task triage`
 - `task context`
 - `link add`

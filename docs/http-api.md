@@ -128,6 +128,9 @@ Request:
 `GET /v1/workspaces/{workspace}/tasks/open`
 - Convenience view for open tasks.
 
+`GET /v1/tasks/{task_id}`
+- Fetch the task record without graph context.
+
 `GET /v1/tasks/{task_id}/context`
 - Fetch a task, its epic, direct dependencies, direct dependents, readiness, active claim, and graph-linked relations.
 

@@ -89,6 +89,7 @@ cargo run -p threadplane-cli -- task offer \
 Inspect the task DAG and ready queue:
 
 ```bash
+cargo run -p threadplane-cli -- task show --task-id <task-id>
 cargo run -p threadplane-cli -- task dag --task-id <task-id>
 
 cargo run -p threadplane-cli -- task list \
