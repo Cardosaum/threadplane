@@ -82,16 +82,76 @@ until curl -sf "http://127.0.0.1:${server_port}/healthz" >/dev/null; do
     sleep 1
 done
 
+epic_json="$(
+    cargo run -q -p threadplane-cli -- \
+        epic add \
+        --workspace "$WORKSPACE" \
+        --author operator \
+        --title "Workflow foundations" \
+        --body "Dogfood first-class epics and task DAGs."
+)"
+epic_id="$(jq -r '.data.epic_id' <<<"$epic_json")"
+
+dependency_task_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task offer \
+        --workspace "$WORKSPACE" \
+        --author operator \
+        --epic-id "$epic_id" \
+        --title "Ship durable task lifecycle" \
+        --details "Completion should unlock dependent work."
+)"
+dependency_task_id="$(jq -r '.data.task_id' <<<"$dependency_task_json")"
+
 task_json="$(
     cargo run -q -p threadplane-cli -- \
         task offer \
         --workspace "$WORKSPACE" \
         --author operator \
+        --epic-id "$epic_id" \
+        --depends-on "$dependency_task_id" \
         --title "Investigate tuple leases" \
-        --details "Need a shared lease-backed claim flow."
+        --details "Need a shared lease-backed claim flow with dependency tracking."
 )"
 task_id="$(jq -r '.data.task_id' <<<"$task_json")"
 task_ref="$(jq -r '.data.entity_ref' <<<"$task_json")"
+
+task_list_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --status open
+)"
+[[ "$(jq -r '.data | length' <<<"$task_list_json")" == "2" ]]
+[[ "$(jq -r --arg task_id "$task_id" '.data[] | select(.task.task_id == $task_id) | .ready' <<<"$task_list_json")" == "false" ]]
+[[ "$(jq -r --arg task_id "$task_id" '.data[] | select(.task.task_id == $task_id) | .epic.epic_id' <<<"$task_list_json")" == "$epic_id" ]]
+
+dag_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task dag \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.dependencies[0].task_id' <<<"$dag_json")" == "$dependency_task_id" ]]
+[[ "$(jq -r '.data.dependencies[0].depth' <<<"$dag_json")" == "1" ]]
+
+complete_dependency_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task complete \
+        --workspace "$WORKSPACE" \
+        --actor operator \
+        --task-id "$dependency_task_id"
+)"
+[[ "$(jq -r '.data.status' <<<"$complete_dependency_json")" == "completed" ]]
+
+ready_tasks_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --status open \
+        --ready-only
+)"
+[[ "$(jq -r '.data | length' <<<"$ready_tasks_json")" == "1" ]]
+[[ "$(jq -r '.data[0].task.task_id' <<<"$ready_tasks_json")" == "$task_id" ]]
 
 note_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -132,8 +192,8 @@ context_after_note_update_json="$(
 [[ "$(jq -r '.data.task.title' <<<"$context_after_note_update_json")" == "Lease semantics updated" ]]
 [[ "$(jq -r '.data.task.details' <<<"$context_after_note_update_json")" == "A xanadu link should keep linked task text synchronized." ]]
 [[ "$(jq -r '.data.task.transclusion_id' <<<"$context_after_note_update_json")" == "$transclusion_id" ]]
-[[ "$(jq -r '.data.relations[0].relation' <<<"$context_after_note_update_json")" == "XANADU_LINK" ]]
-[[ "$(jq -r '.data.relations[0].transclusion_id' <<<"$context_after_note_update_json")" == "$transclusion_id" ]]
+[[ "$(jq -r --arg note_ref "$note_ref" '.data.relations[] | select(.entity_ref == $note_ref) | .relation' <<<"$context_after_note_update_json")" == "XANADU_LINK" ]]
+[[ "$(jq -r --arg note_ref "$note_ref" '.data.relations[] | select(.entity_ref == $note_ref) | .transclusion_id' <<<"$context_after_note_update_json")" == "$transclusion_id" ]]
 
 task_update_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -141,6 +201,7 @@ task_update_json="$(
         --workspace "$WORKSPACE" \
         --actor operator \
         --task-id "$task_id" \
+        --epic-id "$epic_id" \
         --title "Canonical lease wording" \
         --details "Updates from the task side should also rewrite the linked note."
 )"
@@ -154,12 +215,14 @@ note_after_task_update_json="$(
 [[ "$(jq -r '.data.body' <<<"$note_after_task_update_json")" == "Updates from the task side should also rewrite the linked note." ]]
 [[ "$(jq -r '.data.transclusion_id' <<<"$note_after_task_update_json")" == "$transclusion_id" ]]
 
-open_before_claim_json="$(
+context_before_claim_json="$(
     cargo run -q -p threadplane-cli -- \
-        task list-open \
-        --workspace "$WORKSPACE"
+        task context \
+        --task-id "$task_id"
 )"
-[[ "$(jq -r '.data | length' <<<"$open_before_claim_json")" == "1" ]]
+[[ "$(jq -r '.data.ready' <<<"$context_before_claim_json")" == "true" ]]
+[[ "$(jq -r '.data.epic.epic_id' <<<"$context_before_claim_json")" == "$epic_id" ]]
+[[ "$(jq -r '.data.dependencies[0].task_id' <<<"$context_before_claim_json")" == "$dependency_task_id" ]]
 
 claim_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -169,42 +232,74 @@ claim_json="$(
         --task-id "$task_id" \
         --lease-seconds 120
 )"
+[[ "$(jq -r '.data.actor' <<<"$claim_json")" == "agent-b" ]]
 
-open_after_claim_json="$(
+claimed_tasks_json="$(
     cargo run -q -p threadplane-cli -- \
-        task list-open \
-        --workspace "$WORKSPACE"
+        task list \
+        --workspace "$WORKSPACE" \
+        --status claimed
 )"
-[[ "$(jq -r '.data | length' <<<"$open_after_claim_json")" == "0" ]]
+[[ "$(jq -r '.data | length' <<<"$claimed_tasks_json")" == "1" ]]
+[[ "$(jq -r '.data[0].task.task_id' <<<"$claimed_tasks_json")" == "$task_id" ]]
+
+released_task_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task release \
+        --workspace "$WORKSPACE" \
+        --actor agent-b \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.status' <<<"$released_task_json")" == "open" ]]
+
+reclaimed_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task claim \
+        --workspace "$WORKSPACE" \
+        --actor agent-b \
+        --task-id "$task_id" \
+        --lease-seconds 120
+)"
+[[ "$(jq -r '.data.actor' <<<"$reclaimed_json")" == "agent-b" ]]
+
+completed_task_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task complete \
+        --workspace "$WORKSPACE" \
+        --actor agent-b \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.status' <<<"$completed_task_json")" == "completed" ]]
 
 context_json="$(
     cargo run -q -p threadplane-cli -- \
         task context \
         --task-id "$task_id"
 )"
-[[ "$(jq -r '.data.active_claim.actor' <<<"$context_json")" == "agent-b" ]]
-[[ "$(jq -r '.data.relations[0].entity_ref' <<<"$context_json")" == "$note_ref" ]]
-[[ "$(jq -r '.data.relations[0].relation' <<<"$context_json")" == "XANADU_LINK" ]]
+[[ "$(jq -r '.data.active_claim' <<<"$context_json")" == "null" ]]
+[[ "$(jq -r --arg note_ref "$note_ref" '.data.relations[] | select(.entity_ref == $note_ref) | .entity_ref' <<<"$context_json")" == "$note_ref" ]]
 [[ "$(jq -r '.data.task.title' <<<"$context_json")" == "Canonical lease wording" ]]
+[[ "$(jq -r '.data.task.status' <<<"$context_json")" == "completed" ]]
 
 events_json="$(
     cargo run -q -p threadplane-cli -- \
         events list \
         --workspace "$WORKSPACE" \
-        --limit 10
+        --limit 20
 )"
-[[ "$(jq -r '.data | length' <<<"$events_json")" == "6" ]]
-[[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_claimed" ]]
-[[ "$(jq -r '.data[1].kind' <<<"$events_json")" == "task_updated" ]]
-[[ "$(jq -r '.data[2].kind' <<<"$events_json")" == "note_updated" ]]
-[[ "$(jq -r '.data[3].kind' <<<"$events_json")" == "xanadu_linked" ]]
-[[ "$(jq -r '.data[5].kind' <<<"$events_json")" == "task_offered" ]]
+[[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_completed" ]]
+[[ "$(jq -r '.data[] | select(.kind == "task_dependency_declared") | .kind' <<<"$events_json" | head -n1)" == "task_dependency_declared" ]]
+[[ "$(jq -r '.data[] | select(.kind == "epic_recorded") | .kind' <<<"$events_json" | head -n1)" == "epic_recorded" ]]
 
 echo "threadplane e2e ok"
 echo "workspace=$WORKSPACE"
+echo "$epic_json"
+echo "$dependency_task_json"
 echo "$task_json"
 echo "$note_json"
 echo "$link_json"
 echo "$note_update_json"
 echo "$task_update_json"
 echo "$claim_json"
+echo "$released_task_json"
+echo "$completed_task_json"

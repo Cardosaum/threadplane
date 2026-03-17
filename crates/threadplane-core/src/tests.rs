@@ -4,8 +4,9 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::{
-    default_config_path, default_system_config_path, note_entity_ref, parse_entity_ref,
-    relation_type, service_snapshot, task_entity_ref, EntityRef, EventKind, ThreadplaneConfig,
+    default_config_path, default_system_config_path, epic_entity_ref, note_entity_ref,
+    parse_entity_ref, relation_type, service_snapshot, task_entity_ref, EntityRef, EventKind,
+    ThreadplaneConfig,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -17,6 +18,10 @@ fn uuid_inputs() -> impl Strategy<Value = Uuid> {
 }
 
 #[rstest]
+#[case(
+    "epic:550e8400-e29b-41d4-a716-446655440000",
+    Some(EntityRef::Epic(Uuid::from_u128(0x550e_8400_e29b_41d4_a716_4466_5544_0000,)))
+)]
 #[case(
     "note:550e8400-e29b-41d4-a716-446655440000",
     Some(EntityRef::Note(Uuid::from_u128(0x550e_8400_e29b_41d4_a716_4466_5544_0000,)))
@@ -47,9 +52,12 @@ fn relation_type_normalizes_examples(#[case] input: &str, #[case] expected: &str
 #[rstest]
 #[case(EventKind::FactPromoted)]
 #[case(EventKind::LinkDeclared)]
+#[case(EventKind::EpicRecorded)]
 #[case(EventKind::NoteRecorded)]
 #[case(EventKind::NoteUpdated)]
 #[case(EventKind::TaskClaimed)]
+#[case(EventKind::TaskCompleted)]
+#[case(EventKind::TaskDependencyDeclared)]
 #[case(EventKind::TaskOffered)]
 #[case(EventKind::TaskReleased)]
 #[case(EventKind::TaskUpdated)]
@@ -78,6 +86,12 @@ fn threadplane_config_defaults_match_local_poc_expectations() {
 }
 
 proptest::proptest! {
+    #[test]
+    fn formatted_epic_refs_round_trip(epic_id in uuid_inputs()) {
+        let entity_ref = epic_entity_ref(epic_id);
+        prop_assert_eq!(parse_entity_ref(&entity_ref), Some(EntityRef::Epic(epic_id)));
+    }
+
     #[test]
     fn formatted_note_refs_round_trip(note_id in uuid_inputs()) {
         let entity_ref = note_entity_ref(note_id);

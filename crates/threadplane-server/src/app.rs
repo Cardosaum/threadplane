@@ -1,0 +1,326 @@
+#![expect(
+    clippy::arbitrary_source_item_ordering,
+    reason = "App bootstrap groups lifecycle and wiring by layer rather than alphabetically."
+)]
+#![expect(
+    clippy::redundant_pub_crate,
+    reason = "Server app types are shared only across crate-local modules."
+)]
+
+use alloc::sync::Arc;
+use core::net::SocketAddr;
+
+use axum::{
+    routing::{get, post},
+    serve, Router,
+};
+use derive_more::Constructor;
+use neo4rs::{query, Graph};
+use snafu::ResultExt as _;
+use sqlx::{postgres::PgPoolOptions, PgPool};
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
+
+use crate::error::{
+    BindListener, ConnectNeo4j, ConnectPostgres, InvalidBindAddress, LoadConfig, MissingConfig,
+    Serve, VerifyNeo4j,
+};
+use crate::{
+    error::ServerResult,
+    handlers::{
+        add_link, add_task_dependency, add_xanadu_link, claim_task, complete_task, create_epic,
+        create_note, healthz, list_epics, list_events, list_open_tasks, list_tasks, offer_task,
+        release_task, root, scope, show_epic, show_note, task_context, task_dag, update_note,
+        update_task,
+    },
+    lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
+    storage::ensure_schema,
+};
+use threadplane_core::{load_threadplane_config, ThreadplaneConfig, SERVICE_NAME};
+
+#[derive(Clone, Constructor)]
+pub(crate) struct AppState {
+    dependencies: AppDependencies,
+    lease_policy: LeasePolicy,
+}
+
+impl AppState {
+    pub(crate) const fn default_lease_seconds(&self) -> i64 {
+        self.lease_policy.default_lease_seconds()
+    }
+
+    pub(crate) fn graph(&self) -> &Graph {
+        self.dependencies.graph()
+    }
+
+    pub(crate) const fn pool(&self) -> &PgPool {
+        self.dependencies.pool()
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.dependencies.shutdown().await;
+    }
+}
+
+#[derive(Clone, Constructor)]
+pub(crate) struct AppDependencies {
+    graph: Arc<Graph>,
+    pool: PgPool,
+}
+
+impl AppDependencies {
+    fn graph(&self) -> &Graph {
+        self.graph.as_ref()
+    }
+
+    const fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    async fn shutdown(&self) {
+        self.pool.close().await;
+    }
+}
+
+#[derive(Clone, Copy, Constructor)]
+pub(crate) struct LeasePolicy {
+    default_lease_seconds: i64,
+}
+
+impl LeasePolicy {
+    const fn default_lease_seconds(self) -> i64 {
+        self.default_lease_seconds
+    }
+}
+
+struct ServerRuntime {
+    bind_addr: SocketAddr,
+    listener: TcpListener,
+    state: AppState,
+}
+
+impl ServerRuntime {
+    async fn bootstrap(config: AppConfig) -> ServerResult<Self> {
+        let dependencies = connect_dependencies(&config).await?;
+        let listener = bind_listener(config.bind_addr).await?;
+        let lease_policy = LeasePolicy::new(config.default_lease_seconds);
+        let state = AppState::new(dependencies, lease_policy);
+
+        Ok(Self {
+            bind_addr: config.bind_addr,
+            listener,
+            state,
+        })
+    }
+
+    async fn run(self, shutdown_token: CancellationToken) -> ServerResult<()> {
+        info!(service = SERVICE_NAME, bind_addr = %self.bind_addr, "server listening");
+
+        let app = build_router(self.state.clone());
+        let serve_result = serve(self.listener, app)
+            .with_graceful_shutdown(wait_for_shutdown(shutdown_token))
+            .await
+            .context(Serve);
+        self.state.shutdown().await;
+        serve_result
+    }
+}
+
+struct ShutdownCoordinator {
+    signal_task: JoinHandle<()>,
+    token: CancellationToken,
+}
+
+impl ShutdownCoordinator {
+    fn new() -> Self {
+        let token = CancellationToken::new();
+        let signal_task = tokio::spawn(watch_for_shutdown_signal(token.clone()));
+
+        Self { signal_task, token }
+    }
+
+    fn token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+
+    async fn shutdown(self) {
+        self.token.cancel();
+
+        if let Err(error) = self.signal_task.await {
+            error!(?error, "shutdown signal task terminated unexpectedly");
+        }
+    }
+}
+
+pub(crate) struct AppConfig {
+    bind_addr: SocketAddr,
+    database_url: String,
+    neo4j_uri: String,
+    neo4j_user: String,
+    neo4j_password: String,
+    default_lease_seconds: i64,
+}
+
+impl AppConfig {
+    fn from_env() -> ServerResult<Self> {
+        let config = load_threadplane_config().context(LoadConfig)?;
+        Self::from_threadplane_config(config)
+    }
+
+    fn from_threadplane_config(config: ThreadplaneConfig) -> ServerResult<Self> {
+        let bind_addr = config.server.bind.parse().context(InvalidBindAddress {
+            value: config.server.bind.clone(),
+        })?;
+
+        Ok(Self {
+            bind_addr,
+            database_url: required_config("server.database_url", config.server.database_url)?,
+            neo4j_uri: required_config("server.neo4j_uri", config.server.neo4j_uri)?,
+            neo4j_user: required_config("server.neo4j_user", config.server.neo4j_user)?,
+            neo4j_password: required_config("server.neo4j_password", config.server.neo4j_password)?,
+            default_lease_seconds: config.server.default_lease_seconds,
+        })
+    }
+}
+
+fn required_config(key: &str, value: Option<String>) -> ServerResult<String> {
+    value
+        .filter(|candidate| !candidate.is_empty())
+        .ok_or_else(|| {
+            MissingConfig {
+                key: key.to_owned(),
+            }
+            .build()
+        })
+}
+
+fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(root))
+        .route("/healthz", get(healthz))
+        .route("/scope", get(scope))
+        .nest("/v1", api_v1_router())
+        .with_state(state)
+}
+
+fn api_v1_router() -> Router<AppState> {
+    Router::new()
+        .nest("/epics", epic_routes())
+        .nest("/links", link_routes())
+        .nest("/notes", note_routes())
+        .nest("/tasks", task_routes())
+        .nest("/workspaces/{workspace}", workspace_routes())
+}
+
+fn epic_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", post(create_epic))
+        .route("/{epic_id}", get(show_epic))
+}
+
+fn link_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", post(add_link))
+        .route("/xanadu", post(add_xanadu_link))
+}
+
+fn note_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", post(create_note))
+        .route("/update", post(update_note))
+        .route("/{note_id}", get(show_note))
+}
+
+fn task_routes() -> Router<AppState> {
+    Router::new()
+        .route("/claim", post(claim_task))
+        .route("/complete", post(complete_task))
+        .route("/dependencies", post(add_task_dependency))
+        .route("/offers", post(offer_task))
+        .route("/release", post(release_task))
+        .route("/update", post(update_task))
+        .route("/{task_id}/context", get(task_context))
+        .route("/{task_id}/dag", get(task_dag))
+}
+
+fn workspace_routes() -> Router<AppState> {
+    Router::new()
+        .route("/epics", get(list_epics))
+        .route("/events", get(list_events))
+        .nest("/tasks", workspace_task_routes())
+}
+
+fn workspace_task_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(list_tasks))
+        .route("/open", get(list_open_tasks))
+}
+
+async fn bind_listener(bind_addr: SocketAddr) -> ServerResult<TcpListener> {
+    TcpListener::bind(bind_addr)
+        .await
+        .context(BindListener { bind_addr })
+}
+
+async fn connect_dependencies(config: &AppConfig) -> ServerResult<AppDependencies> {
+    let pool = connect_postgres(&config.database_url).await?;
+    ensure_schema(&pool).await?;
+    let graph = connect_neo4j(
+        &config.neo4j_uri,
+        &config.neo4j_user,
+        &config.neo4j_password,
+    )
+    .await?;
+
+    Ok(AppDependencies::new(graph, pool))
+}
+
+async fn connect_neo4j(
+    neo4j_uri: &str,
+    neo4j_user: &str,
+    neo4j_password: &str,
+) -> ServerResult<Arc<Graph>> {
+    let graph = Arc::new(
+        Graph::new(neo4j_uri, neo4j_user, neo4j_password)
+            .await
+            .context(ConnectNeo4j {
+                neo4j_uri: neo4j_uri.to_owned(),
+            })?,
+    );
+    graph.run(query("RETURN 1")).await.context(VerifyNeo4j)?;
+    Ok(graph)
+}
+
+async fn connect_postgres(database_url: &str) -> ServerResult<PgPool> {
+    PgPoolOptions::new()
+        .max_connections(10)
+        .connect(database_url)
+        .await
+        .context(ConnectPostgres {
+            database_url: database_url.to_owned(),
+        })
+}
+
+fn init_tracing() {
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "threadplane_server=info".into()),
+        )
+        .with(fmt::layer())
+        .init();
+}
+
+pub(crate) async fn run() -> ServerResult<()> {
+    drop(dotenvy::dotenv());
+    init_tracing();
+
+    let config = AppConfig::from_env()?;
+    let shutdown = ShutdownCoordinator::new();
+    let runtime = ServerRuntime::bootstrap(config).await?;
+    let run_result = runtime.run(shutdown.token()).await;
+    shutdown.shutdown().await;
+    run_result
+}

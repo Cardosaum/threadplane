@@ -14,7 +14,6 @@ version.workspace = true
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 reqwest.workspace = true

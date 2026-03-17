@@ -2,9 +2,9 @@
 
 ![threadplane demo](./docs/threadplane-demo.gif)
 
-`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, links, and claims for each other to pick up later. The animation above is rendered from the source [asciinema cast](./docs/threadplane-demo.cast).
+`threadplane` is a shared memory and coordination plane for people and AI agents: one internet-reachable service accepts writes, PostgreSQL keeps the durable event log, Neo4j exposes the traversable graph, and agents can leave work, notes, epics, task DAGs, and claims for each other to pick up later. The animation above is rendered from the source [asciinema cast](./docs/threadplane-demo.cast).
 
-This repository is a working POC. It already demonstrates shared notes, task offers and claims, graph links, and Xanadu-style transclusion where linked note/task text stays synchronized.
+This repository is a working POC. It already demonstrates first-class epics, DAG-style task dependencies, lease-backed task lifecycle, graph links, and Xanadu-style transclusion where linked note/task text stays synchronized.
 
 Read next:
 
@@ -26,16 +26,21 @@ Most agent tooling gets one part right and leaves the rest as an exercise:
 - shared context across people, CLIs, and agents
 - durable append-only history
 - graph-backed traversal of dependencies and provenance
+- first-class epics and task DAGs for backlog structure
 - lease-backed claiming so work can be discovered and handed off safely
 - Xanadu-style links for shared text between notes and tasks
 
 ## What You Can Do Today
 
+- Create epics as durable, first-class planning entities.
 - Offer a task into a shared workspace.
+- Declare task dependencies and inspect the task DAG.
+- Ask for ready-only tasks whose dependencies are already completed.
 - Add notes that other agents can find later.
 - Create semantic links between entities.
 - Create Xanadu links so note/task text is kept in sync.
 - Claim open tasks with expiring leases.
+- Release or complete tasks as work moves through the DAG.
 - Inspect recent workspace events.
 - Ask for task context enriched with graph-linked relations.
 
@@ -79,14 +84,57 @@ cargo run -p threadplane-cli -- config show
 
 ## Two-Minute Walkthrough
 
-Create a task:
+Create an epic:
+
+```bash
+cargo run -p threadplane-cli -- epic add \
+  --workspace shared-lab \
+  --author operator \
+  --title "Workflow foundations" \
+  --body "Shared backlog for the workspace."
+```
+
+Create a dependency task:
 
 ```bash
 cargo run -p threadplane-cli -- task offer \
   --workspace shared-lab \
   --author operator \
+  --epic-id <epic-id> \
+  --title "Ship durable task lifecycle" \
+  --details "Completion should unlock dependent work."
+```
+
+Create a dependent task:
+
+```bash
+cargo run -p threadplane-cli -- task offer \
+  --workspace shared-lab \
+  --author operator \
+  --epic-id <epic-id> \
+  --depends-on <dependency-task-id> \
   --title "Investigate tuple leases" \
-  --details "Need a shared lease-backed claim flow."
+  --details "Need a shared lease-backed claim flow with dependency tracking."
+```
+
+Inspect the DAG view:
+
+```bash
+cargo run -p threadplane-cli -- task dag --task-id <task-id>
+```
+
+Complete the prerequisite and ask for ready work:
+
+```bash
+cargo run -p threadplane-cli -- task complete \
+  --workspace shared-lab \
+  --actor operator \
+  --task-id <dependency-task-id>
+
+cargo run -p threadplane-cli -- task list \
+  --workspace shared-lab \
+  --status open \
+  --ready-only
 ```
 
 Create a note:
@@ -131,13 +179,20 @@ cargo run -p threadplane-cli -- task context --task-id <task-id>
 Current commands:
 
 - `scope`
+- `epic add`
+- `epic list`
+- `epic show`
 - `note add`
 - `note show`
 - `note update`
+- `task complete`
 - `task offer`
+- `task depend`
+- `task dag`
+- `task list`
 - `task update`
 - `task claim`
-- `task list-open`
+- `task release`
 - `task context`
 - `link add`
 - `link xanadu`
@@ -196,6 +251,7 @@ neo4j_user = "neo4j"
 - PostgreSQL is the system of record.
 - Neo4j is a rebuildable graph projection.
 - Tuple-space semantics live in the service layer.
+- Tasks can belong to first-class epics and depend on other tasks without creating cycles.
 - Claims use leases so work returns to the pool if an agent disappears.
 - Xanadu links join textual entities into a shared transclusion group.
 
@@ -221,9 +277,11 @@ VarveDB is an important influence for the event-sourcing model, but this POC opt
 This is a POC, not a finished platform. The current implementation proves the shape:
 
 - end-to-end CLI flow works
+- first-class epics and task DAGs work
 - event log is durable in PostgreSQL
 - graph projection is live in Neo4j
 - task claims are lease-backed
+- task release/complete lifecycle is live
 - Xanadu linking propagates content between note/task pairs
 
 The next layers are production concerns such as auth, idempotency, richer task lifecycle, replay workers, and MCP-facing ergonomics.

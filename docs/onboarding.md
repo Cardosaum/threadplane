@@ -42,14 +42,48 @@ cargo run -p threadplane-cli -- scope
 
 ## First Shared Workflow
 
-Offer a task:
+Create an epic:
+
+```bash
+cargo run -p threadplane-cli -- epic add \
+  --workspace shared-lab \
+  --author operator \
+  --title "Workflow foundations" \
+  --body "Shared backlog for the workspace."
+```
+
+Offer a prerequisite task:
 
 ```bash
 cargo run -p threadplane-cli -- task offer \
   --workspace shared-lab \
   --author operator \
+  --epic-id <epic-id> \
+  --title "Ship durable task lifecycle" \
+  --details "Completion should unlock dependent work."
+```
+
+Offer a dependent task:
+
+```bash
+cargo run -p threadplane-cli -- task offer \
+  --workspace shared-lab \
+  --author operator \
+  --epic-id <epic-id> \
+  --depends-on <dependency-task-id> \
   --title "Investigate tuple leases" \
-  --details "Need a shared lease-backed claim flow."
+  --details "Need a shared lease-backed claim flow with dependency tracking."
+```
+
+Inspect the task DAG and ready queue:
+
+```bash
+cargo run -p threadplane-cli -- task dag --task-id <task-id>
+
+cargo run -p threadplane-cli -- task list \
+  --workspace shared-lab \
+  --status open \
+  --ready-only
 ```
 
 Create a note:
@@ -88,6 +122,20 @@ cargo run -p threadplane-cli -- task claim \
   --lease-seconds 120
 ```
 
+Release or complete it as the workflow advances:
+
+```bash
+cargo run -p threadplane-cli -- task release \
+  --workspace shared-lab \
+  --actor agent-b \
+  --task-id <task-id>
+
+cargo run -p threadplane-cli -- task complete \
+  --workspace shared-lab \
+  --actor agent-b \
+  --task-id <task-id>
+```
+
 ## Fastest Verification Path
 
 If you want a single command that proves the vertical slice works end to end:
@@ -98,11 +146,15 @@ If you want a single command that proves the vertical slice works end to end:
 
 That script boots the local stack, starts the API server, runs the CLI against it, and verifies:
 
+- first-class epic creation
+- DAG dependency declaration
+- ready-only task listing
 - task offers
 - note creation
 - Xanadu linking
 - bidirectional content sync
 - lease-backed claiming
+- task release and completion
 - event history
 - graph-backed task context
 

@@ -1,0 +1,392 @@
+use derive_more::Display;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use strum::IntoEnumIterator as _;
+use uuid::Uuid;
+
+use crate::config::SERVICE_NAME;
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumIter,
+    strum::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum EventKind {
+    EpicRecorded,
+    FactPromoted,
+    LinkDeclared,
+    NoteRecorded,
+    NoteUpdated,
+    TaskClaimed,
+    TaskCompleted,
+    TaskDependencyDeclared,
+    TaskOffered,
+    TaskReleased,
+    TaskUpdated,
+    XanaduLinked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventEnvelope {
+    pub actor: String,
+    pub kind: EventKind,
+    pub payload: Value,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceSnapshot {
+    pub event_kinds: Vec<EventKind>,
+    pub graph_projection: String,
+    pub name: String,
+    pub source_of_truth: String,
+    pub summary: String,
+    pub tuple_space: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNoteRequest {
+    pub author: String,
+    pub body: String,
+    pub title: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateNoteRequest {
+    pub actor: String,
+    pub body: String,
+    pub note_id: Uuid,
+    pub title: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfferTaskRequest {
+    pub author: String,
+    pub depends_on: Vec<Uuid>,
+    pub details: String,
+    pub epic_id: Option<Uuid>,
+    pub title: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateTaskRequest {
+    pub actor: String,
+    pub details: String,
+    pub epic_id: Option<Uuid>,
+    pub task_id: Uuid,
+    pub title: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateEpicRequest {
+    pub author: String,
+    pub body: String,
+    pub title: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimTaskRequest {
+    pub actor: String,
+    pub lease_seconds: Option<i64>,
+    pub task_id: Uuid,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseTaskRequest {
+    pub actor: String,
+    pub task_id: Uuid,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompleteTaskRequest {
+    pub actor: String,
+    pub task_id: Uuid,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddTaskDependencyRequest {
+    pub actor: String,
+    pub depends_on_task_id: Uuid,
+    pub task_id: Uuid,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddLinkRequest {
+    pub actor: String,
+    pub from: String,
+    pub relation: String,
+    pub to: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateXanaduLinkRequest {
+    pub actor: String,
+    pub from: String,
+    pub to: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteRecord {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub entity_ref: String,
+    pub event_id: Uuid,
+    pub note_id: Uuid,
+    pub title: String,
+    pub transclusion_id: Option<Uuid>,
+    pub updated_at: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpicRecord {
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub entity_ref: String,
+    pub epic_id: Uuid,
+    pub event_id: Uuid,
+    pub title: String,
+    pub updated_at: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskRecord {
+    pub author: String,
+    pub created_at: String,
+    pub details: String,
+    pub entity_ref: String,
+    pub epic_id: Option<Uuid>,
+    pub event_id: Uuid,
+    pub status: String,
+    pub task_id: Uuid,
+    pub title: String,
+    pub transclusion_id: Option<Uuid>,
+    pub updated_at: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskClaimRecord {
+    pub actor: String,
+    pub claim_id: Uuid,
+    pub claimed_at: String,
+    pub event_id: Uuid,
+    pub expires_at: String,
+    pub task_id: Uuid,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkRecord {
+    pub actor: String,
+    pub created_at: String,
+    pub event_id: Uuid,
+    pub from: String,
+    pub is_xanadu: bool,
+    pub link_id: Uuid,
+    pub relation: String,
+    pub to: String,
+    pub transclusion_id: Option<Uuid>,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRecord {
+    pub actor: String,
+    pub created_at: String,
+    pub event_id: Uuid,
+    pub kind: EventKind,
+    pub payload: Value,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskSummary {
+    pub author: String,
+    pub created_at: String,
+    pub details: String,
+    pub entity_ref: String,
+    pub epic_id: Option<Uuid>,
+    pub status: String,
+    pub task_id: Uuid,
+    pub title: String,
+    pub transclusion_id: Option<Uuid>,
+    pub updated_at: String,
+    pub workspace: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDependencySummary {
+    pub depth: i32,
+    pub entity_ref: String,
+    pub status: String,
+    pub task_id: Uuid,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskListEntry {
+    pub active_claim: Option<TaskClaimRecord>,
+    pub dependencies: Vec<TaskDependencySummary>,
+    pub dependents: Vec<TaskDependencySummary>,
+    pub epic: Option<EpicRecord>,
+    pub ready: bool,
+    pub task: TaskSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskDag {
+    pub dependencies: Vec<TaskDependencySummary>,
+    pub dependents: Vec<TaskDependencySummary>,
+    pub epic: Option<EpicRecord>,
+    pub ready: bool,
+    pub task: TaskSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphRelation {
+    pub body: Option<String>,
+    pub direction: String,
+    pub entity_kind: String,
+    pub entity_ref: String,
+    pub relation: String,
+    pub title: Option<String>,
+    pub transclusion_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskContext {
+    pub active_claim: Option<TaskClaimRecord>,
+    pub dependencies: Vec<TaskDependencySummary>,
+    pub dependents: Vec<TaskDependencySummary>,
+    pub epic: Option<EpicRecord>,
+    pub ready: bool,
+    pub relations: Vec<GraphRelation>,
+    pub task: TaskSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiEnvelope<T> {
+    pub data: T,
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
+pub enum EntityRef {
+    #[display("epic:{_0}")]
+    Epic(Uuid),
+    #[display("note:{_0}")]
+    Note(Uuid),
+    #[display("task:{_0}")]
+    Task(Uuid),
+}
+
+#[inline]
+#[must_use]
+pub fn service_snapshot() -> ServiceSnapshot {
+    ServiceSnapshot {
+        event_kinds: EventKind::iter().collect(),
+        graph_projection: "Neo4j projection for notes, dependencies, provenance, and traversal"
+            .to_owned(),
+        name: SERVICE_NAME.to_owned(),
+        source_of_truth: "PostgreSQL append-only event log managed by threadplane-server"
+            .to_owned(),
+        summary: "Shared human/agent memory and coordination plane".to_owned(),
+        tuple_space:
+            "Service-managed tuple semantics with PostgreSQL persistence and lease-based claims"
+                .to_owned(),
+    }
+}
+
+#[inline]
+#[must_use]
+pub fn scope_summary() -> Value {
+    json!({
+        "name": SERVICE_NAME,
+        "poc": {
+            "goal": "Validate shared agent collaboration over an internet-reachable event log and graph projection",
+            "service_boundary": "All writes pass through threadplane-server",
+            "authoritative_log": "postgresql",
+            "graph_projection": "neo4j",
+            "tuple_coordination": "implemented in the service with postgres-backed leases",
+            "future_influence": "VarveDB remains a candidate for local replicas and offline-first ingest buffers",
+            "xanadu_links": "textual note/task entities can join a shared transclusion group so edits on one side propagate to the others"
+        }
+    })
+}
+
+#[inline]
+#[must_use]
+pub fn task_entity_ref(task_id: Uuid) -> String {
+    EntityRef::Task(task_id).to_string()
+}
+
+#[inline]
+#[must_use]
+pub fn note_entity_ref(note_id: Uuid) -> String {
+    EntityRef::Note(note_id).to_string()
+}
+
+#[inline]
+#[must_use]
+pub fn epic_entity_ref(epic_id: Uuid) -> String {
+    EntityRef::Epic(epic_id).to_string()
+}
+
+#[inline]
+#[must_use]
+pub fn parse_entity_ref(input: &str) -> Option<EntityRef> {
+    let (kind, raw_id) = input.split_once(':')?;
+    let id = Uuid::parse_str(raw_id).ok()?;
+    match kind {
+        "epic" => Some(EntityRef::Epic(id)),
+        "note" => Some(EntityRef::Note(id)),
+        "task" => Some(EntityRef::Task(id)),
+        _ => None,
+    }
+}
+
+#[inline]
+#[must_use]
+pub fn relation_type(input: &str) -> String {
+    let mut last_was_underscore = false;
+    let mut relation = String::new();
+
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            relation.push(ch.to_ascii_uppercase());
+            last_was_underscore = false;
+            continue;
+        }
+
+        if !last_was_underscore {
+            relation.push('_');
+            last_was_underscore = true;
+        }
+    }
+
+    relation.trim_matches('_').to_owned()
+}
