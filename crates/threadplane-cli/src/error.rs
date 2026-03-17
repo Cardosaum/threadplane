@@ -70,4 +70,11 @@ pub(crate) enum CliError {
         #[snafu(implicit)]
         location: snafu::Location,
     },
+
+    #[snafu(display("{message}"))]
+    Usage {
+        message: String,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
 }

@@ -1,6 +1,8 @@
 use uuid::Uuid;
 
-use crate::command::{build_mismatch_warning, render_task_list_compact};
+use crate::command::{
+    build_mismatch_warning, dedup_task_ids, render_task_list_compact, triage_has_changes,
+};
 use threadplane_core::{
     build_info, compare_build_info, EpicRecord, TaskClaimRecord, TaskDependencySummary,
     TaskListEntry, TaskSummary,
@@ -95,4 +97,22 @@ fn render_task_list_compact_formats_ready_tasks() {
 #[test]
 fn render_task_list_compact_handles_empty_lists() {
     assert_eq!(render_task_list_compact(&[]), "no tasks\n");
+}
+
+#[test]
+fn dedup_task_ids_keeps_unique_sorted_values() {
+    let low = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap_or_default();
+    let high = Uuid::parse_str("99999999-2222-3333-4444-555555555555").unwrap_or_default();
+
+    assert_eq!(dedup_task_ids(&[high, low, high]), vec![low, high]);
+}
+
+#[test]
+fn triage_has_changes_rejects_noop_requests() {
+    assert!(!triage_has_changes(false, None));
+    assert!(triage_has_changes(true, None));
+    assert!(triage_has_changes(
+        false,
+        Some(Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default())
+    ));
 }

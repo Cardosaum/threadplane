@@ -227,6 +227,40 @@ note_after_task_update_json="$(
 [[ "$(jq -r '.data.body' <<<"$note_after_task_update_json")" == "Updates from the task side should also rewrite the linked note." ]]
 [[ "$(jq -r '.data.transclusion_id' <<<"$note_after_task_update_json")" == "$transclusion_id" ]]
 
+triage_task_a_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task offer \
+        --workspace "$WORKSPACE" \
+        --author operator \
+        --title "Backfill roadmap item A" \
+        --details "Needs bulk triage support."
+)"
+triage_task_a_id="$(jq -r '.data.task_id' <<<"$triage_task_a_json")"
+
+triage_task_b_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task offer \
+        --workspace "$WORKSPACE" \
+        --author operator \
+        --title "Backfill roadmap item B" \
+        --details "Needs bulk triage support."
+)"
+triage_task_b_id="$(jq -r '.data.task_id' <<<"$triage_task_b_json")"
+
+triage_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task triage \
+        --workspace "$WORKSPACE" \
+        --actor operator \
+        --epic-id "$epic_id" \
+        --complete \
+        --task-id "$triage_task_a_id" \
+        --task-id "$triage_task_b_id"
+)"
+[[ "$(jq -r '.completed_task_ids | length' <<<"$triage_json")" == "2" ]]
+[[ "$(jq -r '.updated_task_ids | length' <<<"$triage_json")" == "2" ]]
+[[ "$(jq -r '.unchanged_task_ids | length' <<<"$triage_json")" == "0" ]]
+
 context_before_claim_json="$(
     cargo run -q -p threadplane-cli -- \
         task context \

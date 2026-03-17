@@ -149,6 +149,18 @@ cargo run -p threadplane-cli -- task complete \
   --task-id <task-id>
 ```
 
+When you need to clean up or re-home several backlog items at once, use bulk triage:
+
+```bash
+cargo run -p threadplane-cli -- task triage \
+  --workspace shared-lab \
+  --actor operator \
+  --epic-id <epic-id> \
+  --complete \
+  --task-id <task-a-id> \
+  --task-id <task-b-id>
+```
+
 ## Fastest Verification Path
 
 If you want a single command that proves the vertical slice works end to end:

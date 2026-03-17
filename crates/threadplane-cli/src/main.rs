@@ -1,3 +1,5 @@
+extern crate alloc;
+
 pub(crate) mod app;
 pub(crate) mod build_info;
 pub(crate) mod command;

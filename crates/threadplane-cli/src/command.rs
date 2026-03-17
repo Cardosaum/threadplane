@@ -3,6 +3,7 @@
     reason = "CLI commands are crate-internal and keep explicit visibility for readability."
 )]
 
+use alloc::collections::BTreeSet;
 use std::{env, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -16,13 +17,13 @@ use threadplane_core::{
     compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
     AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
     CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, TaskListEntry, ThreadplaneConfig, UpdateNoteRequest,
-    UpdateTaskRequest, ApiEnvelope, SERVICE_NAME,
+    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskListEntry, ThreadplaneConfig,
+    UpdateNoteRequest, UpdateTaskRequest, ApiEnvelope, SERVICE_NAME,
 };
 
 use crate::{
     build_info::current_build_info,
-    error::{JsonRender, Result},
+    error::{JsonRender, Result, Usage},
     http::{get_json, post_json},
 };
 
@@ -290,6 +291,8 @@ enum TaskSubcommand {
     Offer(OfferTask),
     #[command(about = "Release an active claim and return the task to the pool")]
     Release(ReleaseTask),
+    #[command(about = "Apply the same epic assignment and/or completion to multiple tasks")]
+    Triage(TriageTasks),
     #[command(about = "Update a task and propagate through Xanadu links when present")]
     Update(UpdateTask),
 }
@@ -431,6 +434,29 @@ struct ReleaseTask {
 }
 
 #[derive(Debug, Args)]
+struct TriageTasks {
+    #[arg(long, help = "Actor performing the triage")]
+    actor: String,
+
+    #[arg(long, help = "Mark every listed task completed after any metadata updates")]
+    complete: bool,
+
+    #[arg(long, help = "Optional epic UUID to assign to every listed task")]
+    epic_id: Option<Uuid>,
+
+    #[arg(
+        long,
+        help = "Task UUID to triage. Repeat for multiple tasks",
+        num_args = 1..,
+        required = true
+    )]
+    task_id: Vec<Uuid>,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
 struct UpdateTask {
     #[arg(long, help = "Actor performing the update")]
     actor: String,
@@ -451,6 +477,16 @@ struct UpdateTask {
     title: String,
 
     #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TaskTriageSummary {
+    completed_task_ids: Vec<Uuid>,
+    epic_id: Option<Uuid>,
+    task_ids: Vec<Uuid>,
+    unchanged_task_ids: Vec<Uuid>,
+    updated_task_ids: Vec<Uuid>,
     workspace: String,
 }
 
@@ -699,6 +735,10 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
                 post_json(client, server, "/v1/tasks/release", &request)?;
             print_value(&response)
         }
+        TaskSubcommand::Triage(task) => {
+            let response = triage_tasks(client, server, &task)?;
+            print_value(&response)
+        }
         TaskSubcommand::Update(task) => {
             let request = UpdateTaskRequest {
                 workspace: task.workspace,
@@ -713,6 +753,12 @@ fn handle_task(client: &Client, server: &str, command: TaskCommand) -> Result<()
             print_value(&response)
         }
     }
+}
+
+fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<TaskContext> {
+    let path = format!("/v1/tasks/{task_id}/context");
+    let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
+    Ok(response.data)
 }
 
 fn print_value<T: Serialize>(value: &T) -> Result<()> {
@@ -813,4 +859,77 @@ fn task_list_path(task: &ListTasks) -> String {
     };
 
     format!("/v1/workspaces/{}/tasks{}", task.workspace, suffix)
+}
+
+fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<TaskTriageSummary> {
+    if !triage_has_changes(task.complete, task.epic_id) {
+        return Usage {
+            message: "task triage needs at least --epic-id or --complete".to_owned(),
+        }
+        .fail();
+    }
+
+    let task_ids = dedup_task_ids(&task.task_id);
+    let mut completed_task_ids = Vec::new();
+    let mut unchanged_task_ids = Vec::new();
+    let mut updated_task_ids = Vec::new();
+
+    for task_id in &task_ids {
+        let context = fetch_task_context(client, server, *task_id)?;
+        let mut changed = false;
+
+        if let Some(epic_id) = task.epic_id {
+            if context.task.epic_id != Some(epic_id) {
+                let request = UpdateTaskRequest {
+                    workspace: task.workspace.clone(),
+                    actor: task.actor.clone(),
+                    task_id: *task_id,
+                    title: context.task.title.clone(),
+                    details: context.task.details.clone(),
+                    epic_id: Some(epic_id),
+                };
+                let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+                updated_task_ids.push(*task_id);
+                changed = true;
+            }
+        }
+
+        if task.complete && context.task.status != "completed" {
+            let request = CompleteTaskRequest {
+                workspace: task.workspace.clone(),
+                actor: task.actor.clone(),
+                task_id: *task_id,
+            };
+            let _: serde_json::Value = post_json(client, server, "/v1/tasks/complete", &request)?;
+            completed_task_ids.push(*task_id);
+            changed = true;
+        }
+
+        if !changed {
+            unchanged_task_ids.push(*task_id);
+        }
+    }
+
+    Ok(TaskTriageSummary {
+        completed_task_ids,
+        epic_id: task.epic_id,
+        task_ids,
+        unchanged_task_ids,
+        updated_task_ids,
+        workspace: task.workspace.clone(),
+    })
+}
+
+pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
+    task_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+#[inline]
+pub(crate) const fn triage_has_changes(complete: bool, epic_id: Option<Uuid>) -> bool {
+    complete || epic_id.is_some()
 }

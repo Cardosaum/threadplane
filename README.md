@@ -150,6 +150,18 @@ cargo run -p threadplane-cli -- task list \
   --format compact
 ```
 
+Bulk-triage multiple backlog items at once:
+
+```bash
+cargo run -p threadplane-cli -- task triage \
+  --workspace shared-lab \
+  --actor operator \
+  --epic-id <epic-id> \
+  --complete \
+  --task-id <task-a-id> \
+  --task-id <task-b-id>
+```
+
 Create a note:
 
 ```bash
@@ -209,6 +221,7 @@ Current commands:
 - `task update`
 - `task claim`
 - `task release`
+- `task triage`
 - `task context`
 - `link add`
 - `link xanadu`
