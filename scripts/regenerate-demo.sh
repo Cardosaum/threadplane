@@ -110,9 +110,12 @@ PY
 agg \
     --theme github-dark \
     --font-family "JetBrains Mono,Fira Code,DejaVu Sans Mono" \
-    --font-size 18 \
+    --font-size 16 \
+    --fps-cap 20 \
     --speed 1.1 \
     --idle-time-limit 1.2 \
-    --last-frame-duration 2 \
+    --last-frame-duration 1.5 \
+    --cols 96 \
+    --rows 24 \
     docs/threadplane-demo.cast \
     docs/threadplane-demo.gif
