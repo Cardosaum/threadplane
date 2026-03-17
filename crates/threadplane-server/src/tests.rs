@@ -1,12 +1,18 @@
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use chrono::Utc;
 use proptest::arbitrary::any;
 use proptest::prop_assert_eq;
 use rstest::rstest;
+use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::{
+    app::ProjectionCoordinator,
     build_info::current_build_info,
+    error::ThreadplaneServerError,
     handlers::normalized_list_limit,
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
@@ -225,4 +231,70 @@ async fn wait_for_shutdown_completes_after_cancellation() {
     shutdown_token.cancel();
 
     wait_for_shutdown(shutdown_token).await;
+}
+
+#[tokio::test]
+async fn projection_coordinator_serializes_concurrent_writes() {
+    let projection_coordinator = ProjectionCoordinator::default();
+    let shared_barrier = Arc::new(Barrier::new(2));
+    let active_writers = Arc::new(AtomicUsize::new(0));
+    let peak_writers = Arc::new(AtomicUsize::new(0));
+
+    let first = {
+        let first_barrier = Arc::clone(&shared_barrier);
+        let first_active_writers = Arc::clone(&active_writers);
+        let first_peak_writers = Arc::clone(&peak_writers);
+        let first_projection_coordinator = projection_coordinator.clone();
+        tokio::spawn(async move {
+            first_projection_coordinator
+                .run(async move {
+                    let current = first_active_writers.fetch_add(1, Ordering::SeqCst) + 1;
+                    first_peak_writers.fetch_max(current, Ordering::SeqCst);
+                    first_barrier.wait().await;
+                    first_active_writers.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, ThreadplaneServerError>(())
+                })
+                .await
+        })
+    };
+
+    let second = {
+        let second_barrier = Arc::clone(&shared_barrier);
+        let second_active_writers = Arc::clone(&active_writers);
+        let second_peak_writers = Arc::clone(&peak_writers);
+        let second_projection_coordinator = projection_coordinator.clone();
+        tokio::spawn(async move {
+            second_barrier.wait().await;
+            second_projection_coordinator
+                .run(async move {
+                    let current = second_active_writers.fetch_add(1, Ordering::SeqCst) + 1;
+                    second_peak_writers.fetch_max(current, Ordering::SeqCst);
+                    second_active_writers.fetch_sub(1, Ordering::SeqCst);
+                    Ok::<_, ThreadplaneServerError>(())
+                })
+                .await
+        })
+    };
+
+    let first_result = first.await;
+    assert!(first_result.is_ok(), "first projection task should join");
+    let Ok(first_projection_result) = first_result else {
+        return;
+    };
+    assert!(
+        first_projection_result.is_ok(),
+        "first projection should succeed"
+    );
+
+    let second_result = second.await;
+    assert!(second_result.is_ok(), "second projection task should join");
+    let Ok(second_projection_result) = second_result else {
+        return;
+    };
+    assert!(
+        second_projection_result.is_ok(),
+        "second projection should succeed"
+    );
+
+    assert_eq!(peak_writers.load(Ordering::SeqCst), 1);
 }

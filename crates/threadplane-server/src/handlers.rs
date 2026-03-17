@@ -37,7 +37,7 @@ use crate::{
         fetch_note_by_id, fetch_note_by_id_tx, fetch_projection_status, fetch_task_by_id,
         fetch_task_by_id_tx, fetch_tasks_for_listing, prepare_xanadu_group,
         sync_transclusion_members, task_is_ready, unique_task_ids, update_transclusion_group,
-        TaskListFilters,
+        TaskListFilters, TaskRow,
     },
 };
 use threadplane_core::{
@@ -198,6 +198,31 @@ async fn ensure_task_is_unclaimed(
     Ok(())
 }
 
+async fn project_task_record(state: &AppState, record: &TaskRecord) -> ServerResult<()> {
+    project_task_supporting_entities(state, record).await?;
+    project_task(state.graph(), record)
+        .await
+        .map_err(|error| {
+            error!(?error, task_id = %record.task_id, "failed to project task");
+            ThreadplaneServerError::internal(error)
+        })
+}
+
+async fn project_claimed_task_record(
+    state: &AppState,
+    task: &TaskRow,
+    task_record: &TaskRecord,
+    claim: &TaskClaimRecord,
+) -> ServerResult<()> {
+    project_task_record(state, task_record).await?;
+    project_claim(state.graph(), task, claim)
+        .await
+        .map_err(|error| {
+            error!(?error, task_id = %claim.task_id, "failed to project claim");
+            ThreadplaneServerError::internal(error)
+        })
+}
+
 fn build_xanadu_request_payload(request: &CreateXanaduLinkRequest) -> Value {
     json!({
         "workspace": request.workspace,
@@ -316,9 +341,13 @@ pub(crate) async fn create_epic(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
             .await?;
     tx.commit().await?;
-    project_epic(state.graph(), &record)
-        .await
-        .map_err(ThreadplaneServerError::internal)?;
+    state
+        .serialize_graph_projection(async {
+            project_epic(state.graph(), &record)
+                .await
+                .map_err(ThreadplaneServerError::internal)
+        })
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -399,12 +428,16 @@ pub(crate) async fn create_note(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
             .await?;
     tx.commit().await?;
-    project_note(state.graph(), &record)
-        .await
-        .map_err(|error| {
-            error!(?error, note_id = %record.note_id, "failed to project note");
-            ThreadplaneServerError::internal(error)
-        })?;
+    state
+        .serialize_graph_projection(async {
+            project_note(state.graph(), &record)
+                .await
+                .map_err(|error| {
+                    error!(?error, note_id = %record.note_id, "failed to project note");
+                    ThreadplaneServerError::internal(error)
+                })
+        })
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -492,15 +525,19 @@ pub(crate) async fn update_note(
             .await?;
     tx.commit().await?;
 
-    if let Some(group_id) = transclusion_id {
-        reproject_transclusion_group(&state, group_id, None)
-            .await
-            .map_err(ThreadplaneServerError::internal)?;
-    } else {
-        project_note(state.graph(), &record)
-            .await
-            .map_err(ThreadplaneServerError::internal)?;
-    }
+    state
+        .serialize_graph_projection(async {
+            if let Some(group_id) = transclusion_id {
+                reproject_transclusion_group(&state, group_id, None)
+                    .await
+                    .map_err(ThreadplaneServerError::internal)
+            } else {
+                project_note(state.graph(), &record)
+                    .await
+                    .map_err(ThreadplaneServerError::internal)
+            }
+        })
+        .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -598,13 +635,9 @@ pub(crate) async fn offer_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at)
             .await?;
     tx.commit().await?;
-    project_task_supporting_entities(&state, &record).await?;
-    project_task(state.graph(), &record)
-        .await
-        .map_err(|error| {
-            error!(?error, task_id = %record.task_id, "failed to project task");
-            ThreadplaneServerError::internal(error)
-        })?;
+    state
+        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -660,16 +693,18 @@ pub(crate) async fn update_task(
             .await?;
     tx.commit().await?;
 
-    if let Some(group_id) = transclusion_id {
-        reproject_transclusion_group(&state, group_id, None)
-            .await
-            .map_err(ThreadplaneServerError::internal)?;
-    } else {
-        project_task(state.graph(), &record)
-            .await
-            .map_err(ThreadplaneServerError::internal)?;
-    }
-    project_task_supporting_entities(&state, &record).await?;
+    state
+        .serialize_graph_projection(Box::pin(async {
+            if let Some(group_id) = transclusion_id {
+                reproject_transclusion_group(&state, group_id, None)
+                    .await
+                    .map_err(ThreadplaneServerError::internal)?;
+                return Ok(());
+            }
+
+            project_task_record(&state, &record).await
+        }))
+        .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -764,16 +799,14 @@ pub(crate) async fn claim_task(
     let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
-    project_task_supporting_entities(&state, &task_record).await?;
-    project_task(state.graph(), &task_record)
-        .await
-        .map_err(ThreadplaneServerError::internal)?;
-    project_claim(state.graph(), &task, &record)
-        .await
-        .map_err(|error| {
-            error!(?error, task_id = %record.task_id, "failed to project claim");
-            ThreadplaneServerError::internal(error)
-        })?;
+    state
+        .serialize_graph_projection(Box::pin(project_claimed_task_record(
+            &state,
+            &task,
+            &task_record,
+            &record,
+        )))
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -857,10 +890,9 @@ pub(crate) async fn release_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, released_at)
             .await?;
     tx.commit().await?;
-    project_task_supporting_entities(&state, &record).await?;
-    project_task(state.graph(), &record)
-        .await
-        .map_err(ThreadplaneServerError::internal)?;
+    state
+        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -942,10 +974,9 @@ pub(crate) async fn complete_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, completed_at)
             .await?;
     tx.commit().await?;
-    project_task_supporting_entities(&state, &record).await?;
-    project_task(state.graph(), &record)
-        .await
-        .map_err(ThreadplaneServerError::internal)?;
+    state
+        .serialize_graph_projection(Box::pin(project_task_record(&state, &record)))
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -995,14 +1026,18 @@ pub(crate) async fn add_task_dependency(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &data, created_at).await?;
     tx.commit().await?;
 
-    project_task_dependency_by_id(
-        state.graph(),
-        state.pool(),
-        request.task_id,
-        request.depends_on_task_id,
-    )
-    .await
-    .map_err(ThreadplaneServerError::internal)?;
+    state
+        .serialize_graph_projection(async {
+            project_task_dependency_by_id(
+                state.graph(),
+                state.pool(),
+                request.task_id,
+                request.depends_on_task_id,
+            )
+            .await
+            .map_err(ThreadplaneServerError::internal)
+        })
+        .await?;
 
     Ok(success_with_receipt(data, receipt))
 }
@@ -1089,12 +1124,16 @@ pub(crate) async fn add_link(
             .await?;
     tx.commit().await?;
 
-    project_link(state.graph(), &record)
-        .await
-        .map_err(|error| {
-            error!(?error, link_id = %record.link_id, "failed to project link");
-            ThreadplaneServerError::internal(error)
-        })?;
+    state
+        .serialize_graph_projection(async {
+            project_link(state.graph(), &record)
+                .await
+                .map_err(|error| {
+                    error!(?error, link_id = %record.link_id, "failed to project link");
+                    ThreadplaneServerError::internal(error)
+                })
+        })
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1188,13 +1227,17 @@ pub(crate) async fn add_xanadu_link(
             .await?;
     tx.commit().await?;
 
-    reproject_transclusion_group(
-        &state,
-        xanadu_group.canonical_group_id,
-        xanadu_group.merged_group_id,
-    )
-    .await
-    .map_err(ThreadplaneServerError::internal)?;
+    state
+        .serialize_graph_projection(async {
+            reproject_transclusion_group(
+                &state,
+                xanadu_group.canonical_group_id,
+                xanadu_group.merged_group_id,
+            )
+            .await
+            .map_err(ThreadplaneServerError::internal)
+        })
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }

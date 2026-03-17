@@ -8,6 +8,7 @@
 )]
 
 use alloc::sync::Arc;
+use core::future::Future;
 use core::net::SocketAddr;
 
 use axum::{
@@ -18,7 +19,7 @@ use derive_more::Constructor;
 use neo4rs::{query, Graph};
 use snafu::ResultExt as _;
 use sqlx::{postgres::PgPoolOptions, PgPool};
-use tokio::{net::TcpListener, task::JoinHandle};
+use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
@@ -45,6 +46,7 @@ use threadplane_core::{load_threadplane_config, ThreadplaneConfig, SERVICE_NAME}
 pub(crate) struct AppState {
     dependencies: AppDependencies,
     lease_policy: LeasePolicy,
+    projection_coordinator: ProjectionCoordinator,
 }
 
 impl AppState {
@@ -62,6 +64,16 @@ impl AppState {
 
     pub(crate) async fn shutdown(&self) {
         self.dependencies.shutdown().await;
+    }
+
+    pub(crate) async fn serialize_graph_projection<T, Operation>(
+        &self,
+        operation: Operation,
+    ) -> ServerResult<T>
+    where
+        Operation: Future<Output = ServerResult<T>>,
+    {
+        self.projection_coordinator.run(operation).await
     }
 }
 
@@ -96,6 +108,21 @@ impl LeasePolicy {
     }
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ProjectionCoordinator {
+    gate: Arc<Mutex<()>>,
+}
+
+impl ProjectionCoordinator {
+    pub(crate) async fn run<T, Operation>(&self, operation: Operation) -> ServerResult<T>
+    where
+        Operation: Future<Output = ServerResult<T>>,
+    {
+        let _guard = self.gate.lock().await;
+        operation.await
+    }
+}
+
 struct ServerRuntime {
     bind_addr: SocketAddr,
     listener: TcpListener,
@@ -107,7 +134,8 @@ impl ServerRuntime {
         let dependencies = connect_dependencies(&config).await?;
         let listener = bind_listener(config.bind_addr).await?;
         let lease_policy = LeasePolicy::new(config.default_lease_seconds);
-        let state = AppState::new(dependencies, lease_policy);
+        let projection_coordinator = ProjectionCoordinator::default();
+        let state = AppState::new(dependencies, lease_policy, projection_coordinator);
 
         Ok(Self {
             bind_addr: config.bind_addr,
@@ -118,7 +146,7 @@ impl ServerRuntime {
 
     async fn run(self, shutdown_token: CancellationToken) -> ServerResult<()> {
         let (projection_shutdown, projection_worker) =
-            self.start_projection_worker(&shutdown_token).await?;
+            Box::pin(self.start_projection_worker(&shutdown_token)).await?;
         info!(service = SERVICE_NAME, bind_addr = %self.bind_addr, "server listening");
 
         let app = build_router(self.state.clone());
@@ -135,7 +163,7 @@ impl ServerRuntime {
         &self,
         shutdown_token: &CancellationToken,
     ) -> ServerResult<(CancellationToken, JoinHandle<()>)> {
-        let replayed = catch_up_graph_projection(&self.state).await?;
+        let replayed = Box::pin(catch_up_graph_projection(&self.state)).await?;
         info!(
             projection = GRAPH_PROJECTION_NAME,
             replayed,
@@ -359,7 +387,7 @@ pub(crate) async fn run() -> ServerResult<()> {
     let config = AppConfig::from_env()?;
     let shutdown = ShutdownCoordinator::new();
     let runtime = ServerRuntime::bootstrap(config).await?;
-    let run_result = runtime.run(shutdown.token()).await;
+    let run_result = Box::pin(runtime.run(shutdown.token())).await;
     shutdown.shutdown().await;
     run_result
 }

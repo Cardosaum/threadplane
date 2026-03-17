@@ -16,5 +16,5 @@ mod tests;
 
 #[tokio::main]
 async fn main() -> error::ServerResult<()> {
-    app::run().await
+    Box::pin(app::run()).await
 }

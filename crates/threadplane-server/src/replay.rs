@@ -46,7 +46,7 @@ pub(crate) async fn catch_up_graph_projection(state: &AppState) -> ServerResult<
     let mut total_replayed = 0_u64;
 
     loop {
-        let replayed = replay_graph_projection_batch(state, REPLAY_BATCH_SIZE).await?;
+        let replayed = Box::pin(replay_graph_projection_batch(state, REPLAY_BATCH_SIZE)).await?;
         total_replayed = total_replayed.saturating_add(replayed);
 
         if replayed == 0 {
@@ -63,7 +63,7 @@ pub(crate) fn spawn_graph_projection_worker(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match replay_graph_projection_batch(&state, REPLAY_BATCH_SIZE).await {
+            match Box::pin(replay_graph_projection_batch(&state, REPLAY_BATCH_SIZE)).await {
                 Ok(0) => {
                     tokio::select! {
                         () = shutdown_token.cancelled() => break,
@@ -100,7 +100,7 @@ async fn replay_graph_projection_batch(state: &AppState, limit: i64) -> ServerRe
     }
 
     for event in &events {
-        project_event(state, event).await?;
+        Box::pin(project_event(state, event)).await?;
     }
 
     if let Some(last_event) = events.last() {
@@ -119,23 +119,29 @@ async fn replay_graph_projection_batch(state: &AppState, limit: i64) -> ServerRe
 }
 
 async fn project_event(state: &AppState, event: &EventRow) -> ServerResult<()> {
-    match event.parsed_kind() {
-        EventKind::EpicRecorded => project_epic_recorded(state, event).await,
-        EventKind::FactPromoted => {
-            warn!(event_id = %event.event_id, "fact promotion replay is not implemented yet");
-            Ok(())
-        }
-        EventKind::LinkDeclared => project_link_declared(state, event).await,
-        EventKind::NoteRecorded => project_note_recorded(state, event).await,
-        EventKind::NoteUpdated => project_note_updated(state, event).await,
-        EventKind::TaskClaimed => project_task_claimed(state, event).await,
-        EventKind::TaskCompleted => project_task_completed(state, event).await,
-        EventKind::TaskDependencyDeclared => project_task_dependency_declared(state, event).await,
-        EventKind::TaskOffered => project_task_offered(state, event).await,
-        EventKind::TaskReleased => project_task_released(state, event).await,
-        EventKind::TaskUpdated => project_task_updated(state, event).await,
-        EventKind::XanaduLinked => project_xanadu_linked(state, event).await,
-    }
+    Box::pin(state
+        .serialize_graph_projection(async {
+            match event.parsed_kind() {
+                EventKind::EpicRecorded => project_epic_recorded(state, event).await,
+                EventKind::FactPromoted => {
+                    warn!(event_id = %event.event_id, "fact promotion replay is not implemented yet");
+                    Ok(())
+                }
+                EventKind::LinkDeclared => project_link_declared(state, event).await,
+                EventKind::NoteRecorded => project_note_recorded(state, event).await,
+                EventKind::NoteUpdated => project_note_updated(state, event).await,
+                EventKind::TaskClaimed => project_task_claimed(state, event).await,
+                EventKind::TaskCompleted => project_task_completed(state, event).await,
+                EventKind::TaskDependencyDeclared => {
+                    project_task_dependency_declared(state, event).await
+                }
+                EventKind::TaskOffered => project_task_offered(state, event).await,
+                EventKind::TaskReleased => project_task_released(state, event).await,
+                EventKind::TaskUpdated => project_task_updated(state, event).await,
+                EventKind::XanaduLinked => project_xanadu_linked(state, event).await,
+            }
+        }))
+    .await
 }
 
 async fn project_epic_recorded(state: &AppState, event: &EventRow) -> ServerResult<()> {

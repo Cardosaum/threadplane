@@ -469,7 +469,7 @@ events_json="$(
     cargo run -q -p threadplane-cli -- \
         events list \
         --workspace "$WORKSPACE" \
-        --limit 20
+        --limit 40
 )"
 [[ "$(jq -r '.data[0].kind' <<<"$events_json")" == "task_completed" ]]
 [[ "$(jq -r '.data[] | select(.kind == "task_dependency_declared") | .kind' <<<"$events_json" | head -n1)" == "task_dependency_declared" ]]
