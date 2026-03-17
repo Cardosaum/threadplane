@@ -2881,6 +2881,7 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu",
+ "strum",
  "threadplane-core",
  "uuid",
 ]

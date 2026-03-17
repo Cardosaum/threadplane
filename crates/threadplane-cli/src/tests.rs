@@ -6,8 +6,16 @@ use crate::command::{
 };
 use threadplane_core::{
     build_info, compare_build_info, EpicRecord, TaskClaimRecord, TaskDependencySummary,
-    TaskListEntry, TaskSummary,
+    TaskListEntry, TaskMetadata, TaskPriority, TaskSummary,
 };
+
+fn sample_task_metadata() -> TaskMetadata {
+    TaskMetadata {
+        labels: vec!["workflow".to_owned(), "agent".to_owned()],
+        owner: Some("codex".to_owned()),
+        priority: TaskPriority::High,
+    }
+}
 
 #[test]
 fn build_mismatch_warning_lists_changed_fields() {
@@ -78,6 +86,7 @@ fn render_task_list_compact_formats_ready_tasks() {
             epic_id: Some(
                 Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
             ),
+            metadata: sample_task_metadata(),
             status: "open".to_owned(),
             task_id,
             title: "Add concise ready-queue views".to_owned(),
@@ -89,9 +98,12 @@ fn render_task_list_compact_formats_ready_tasks() {
 
     assert!(rendered.contains("11111111 | Add concise ready-queue views"));
     assert!(rendered.contains("status=open"));
+    assert!(rendered.contains("priority=high"));
     assert!(rendered.contains("ready"));
     assert!(rendered.contains("deps=1"));
     assert!(rendered.contains("epic=Dogfooding"));
+    assert!(rendered.contains("owner=codex"));
+    assert!(rendered.contains("labels=workflow,agent"));
     assert!(rendered.contains("claim=codex"));
 }
 
@@ -130,10 +142,18 @@ fn dedup_task_ids_keeps_unique_sorted_values() {
 
 #[test]
 fn triage_has_changes_rejects_noop_requests() {
-    assert!(!triage_has_changes(false, None));
-    assert!(triage_has_changes(true, None));
+    let noop = super::command::TaskMetadataPatchArgs::default();
+    let priority_change = super::command::TaskMetadataPatchArgs {
+        priority: Some(super::command::TaskPriorityValue::Urgent),
+        ..Default::default()
+    };
+
+    assert!(!triage_has_changes(false, None, &noop));
+    assert!(triage_has_changes(true, None, &noop));
     assert!(triage_has_changes(
         false,
-        Some(Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default())
+        Some(Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default()),
+        &noop,
     ));
+    assert!(triage_has_changes(false, None, &priority_change));
 }

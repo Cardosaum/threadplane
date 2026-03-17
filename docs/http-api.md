@@ -76,6 +76,9 @@ Request:
   "author": "operator",
   "epic_id": "00000000-0000-0000-0000-000000000000",
   "depends_on": ["11111111-1111-1111-1111-111111111111"],
+  "priority": "high",
+  "owner": "codex",
+  "labels": ["agent", "workflow"],
   "title": "Investigate tuple leases",
   "details": "Need a shared lease-backed claim flow with dependency tracking."
 }
@@ -83,6 +86,22 @@ Request:
 
 `POST /v1/tasks/update`
 - Update a task and propagate through Xanadu links when present. `epic_id` can also be supplied to attach the task to an epic.
+
+Request:
+
+```json
+{
+  "workspace": "shared-lab",
+  "actor": "operator",
+  "task_id": "00000000-0000-0000-0000-000000000000",
+  "epic_id": "00000000-0000-0000-0000-000000000000",
+  "priority": "urgent",
+  "owner": "ops",
+  "labels": ["sync", "xanadu"],
+  "title": "Canonical lease wording",
+  "details": "Updates from the task side should also rewrite the linked note."
+}
+```
 
 `POST /v1/tasks/claim`
 - Claim an open task with a lease.
@@ -122,6 +141,9 @@ Request:
 - List tasks with optional filters:
   - `status=open|claimed|completed`
   - `epic_id=<uuid>`
+  - `priority=low|medium|high|urgent`
+  - `owner=<string>`
+  - `label=<normalized-label>`
   - `limit=1..200`
   - `ready_only=true|false`
 

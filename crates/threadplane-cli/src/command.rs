@@ -14,12 +14,12 @@ use snafu::ResultExt as _;
 use uuid::Uuid;
 
 use threadplane_core::{
-    compare_build_info, default_config_path, default_system_config_path, AddLinkRequest,
-    AddTaskDependencyRequest, BuildComparison, ClaimTaskRequest, CompleteTaskRequest,
-    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, OfferTaskRequest,
-    ReleaseTaskRequest, ServiceSnapshot, TaskContext, TaskDag, TaskDependencySummary,
-    TaskListEntry, TaskRecord, ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest,
-    ApiEnvelope, SERVICE_NAME,
+    compare_build_info, default_config_path, default_system_config_path, normalize_task_labels,
+    normalize_task_owner, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, BuildComparison,
+    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
+    CreateXanaduLinkRequest, OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskContext,
+    TaskDag, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
+    ThreadplaneConfig, UpdateNoteRequest, UpdateTaskRequest, SERVICE_NAME,
 };
 
 use crate::{
@@ -403,8 +403,14 @@ struct ListTasks {
     )]
     format: TaskListOutput,
 
+    #[arg(long, help = "Only include tasks with the selected normalized label")]
+    label: Option<String>,
+
     #[arg(long, help = "Maximum number of tasks to return")]
     limit: Option<i64>,
+
+    #[command(flatten)]
+    metadata_filters: TaskMetadataFilterArgs,
 
     #[arg(long, help = "Only include tasks whose dependencies are all completed")]
     ready_only: bool,
@@ -423,6 +429,58 @@ enum TaskListOutput {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, strum::Display)]
+#[strum(serialize_all = "snake_case")]
+pub(crate) enum TaskPriorityValue {
+    High,
+    Low,
+    Medium,
+    Urgent,
+}
+
+#[derive(Debug, Args, Clone)]
+struct TaskMetadataArgs {
+    #[arg(long, help = "Durable label. Repeat for multiple labels")]
+    label: Vec<String>,
+
+    #[arg(long, help = "Durable owner, distinct from the temporary claim actor")]
+    owner: Option<String>,
+
+    #[arg(
+        long,
+        default_value_t = TaskPriorityValue::Medium,
+        help = "Priority used for backlog sorting and filtering"
+    )]
+    priority: TaskPriorityValue,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+struct TaskMetadataFilterArgs {
+    #[arg(long, help = "Only include tasks owned by this durable owner")]
+    owner: Option<String>,
+
+    #[arg(long, help = "Only include tasks with this priority")]
+    priority: Option<TaskPriorityValue>,
+}
+
+#[derive(Debug, Args, Clone, Default)]
+pub(crate) struct TaskMetadataPatchArgs {
+    #[arg(long, help = "Clear all durable labels")]
+    pub(crate) clear_labels: bool,
+
+    #[arg(long, help = "Clear any durable owner")]
+    pub(crate) clear_owner: bool,
+
+    #[arg(long, help = "Replace labels with this set. Repeat for multiple labels")]
+    pub(crate) label: Vec<String>,
+
+    #[arg(long, help = "Replace the durable owner")]
+    pub(crate) owner: Option<String>,
+
+    #[arg(long, help = "Replace the task priority")]
+    pub(crate) priority: Option<TaskPriorityValue>,
+}
+
 #[derive(Debug, Args)]
 struct OfferTask {
     #[arg(long, help = "Task author")]
@@ -436,6 +494,9 @@ struct OfferTask {
 
     #[arg(long, help = "Optional epic UUID to attach this task to")]
     epic_id: Option<Uuid>,
+
+    #[command(flatten)]
+    metadata: TaskMetadataArgs,
 
     #[arg(long, help = "Task title")]
     title: String,
@@ -473,6 +534,9 @@ struct TriageTasks {
     #[arg(long, help = "Optional epic UUID to assign to every listed task")]
     epic_id: Option<Uuid>,
 
+    #[command(flatten)]
+    metadata: TaskMetadataPatchArgs,
+
     #[arg(
         long,
         help = "Task UUID to triage. Repeat for multiple tasks",
@@ -499,6 +563,9 @@ struct UpdateTask {
     )]
     epic_id: Option<Uuid>,
 
+    #[command(flatten)]
+    metadata: TaskMetadataArgs,
+
     #[arg(long, help = "Task UUID")]
     task_id: Uuid,
 
@@ -511,8 +578,13 @@ struct UpdateTask {
 
 #[derive(Debug, Serialize)]
 struct TaskTriageSummary {
+    clear_labels: bool,
+    clear_owner: bool,
     completed_task_ids: Vec<Uuid>,
     epic_id: Option<Uuid>,
+    labels: Option<Vec<String>>,
+    owner: Option<String>,
+    priority: Option<TaskPriority>,
     task_ids: Vec<Uuid>,
     unchanged_task_ids: Vec<Uuid>,
     updated_task_ids: Vec<Uuid>,
@@ -771,6 +843,7 @@ fn handle_offer_task(client: &Client, server: &str, task: OfferTask) -> Result<(
         title: task.title,
         details: task.details,
         epic_id: task.epic_id,
+        metadata: task_metadata_from_args(task.metadata),
     };
     let response: serde_json::Value = post_json(client, server, "/v1/tasks/offers", &request)?;
     print_value(&response)
@@ -812,6 +885,7 @@ fn handle_update_task(client: &Client, server: &str, task: UpdateTask) -> Result
         title: task.title,
         details: task.details,
         epic_id: task.epic_id,
+        metadata: task_metadata_from_args(task.metadata),
     };
     let response: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
     print_value(&response)
@@ -877,6 +951,23 @@ fn compact_epic_label(entry: &TaskListEntry) -> String {
         .map_or_else(|| "epic=none".to_owned(), |epic| format!("epic={}", epic.title))
 }
 
+fn compact_owner_label(entry: &TaskListEntry) -> String {
+    entry
+        .task
+        .metadata
+        .owner
+        .as_ref()
+        .map_or_else(|| "owner=none".to_owned(), |owner| format!("owner={owner}"))
+}
+
+fn compact_labels_label(entry: &TaskListEntry) -> String {
+    if entry.task.metadata.labels.is_empty() {
+        return "labels=-".to_owned();
+    }
+
+    format!("labels={}", entry.task.metadata.labels.join(","))
+}
+
 fn handle_task_dependency_view(
     client: &Client,
     server: &str,
@@ -909,14 +1000,17 @@ pub(crate) fn render_task_list_compact(entries: &[TaskListEntry]) -> String {
         .iter()
         .map(|entry| {
             format!(
-                "{} | {} | status={} | {} | deps={} | dependents={} | {} | {}",
+                "{} | {} | status={} | priority={} | {} | deps={} | dependents={} | {} | {} | {} | {}",
                 short_task_id(&entry.task.task_id),
                 entry.task.title,
                 entry.task.status,
+                entry.task.metadata.priority,
                 if entry.ready { "ready" } else { "blocked" },
                 entry.dependencies.len(),
                 entry.dependents.len(),
                 compact_epic_label(entry),
+                compact_owner_label(entry),
+                compact_labels_label(entry),
                 compact_claim_label(entry),
             )
         })
@@ -966,6 +1060,18 @@ fn task_list_path(task: &ListTasks) -> String {
     if let Some(limit) = task.limit {
         query.push(format!("limit={limit}"));
     }
+    if let Some(label) = normalize_task_labels(task.label.clone().into_iter().collect())
+        .into_iter()
+        .next()
+    {
+        query.push(format!("label={label}"));
+    }
+    if let Some(owner) = normalize_task_owner(task.metadata_filters.owner.clone()) {
+        query.push(format!("owner={owner}"));
+    }
+    if let Some(priority) = task.metadata_filters.priority {
+        query.push(format!("priority={}", task_priority_from_cli(priority)));
+    }
     if task.ready_only {
         query.push("ready_only=true".to_owned());
     }
@@ -1000,9 +1106,11 @@ fn select_dependency_view_from_dag(
 }
 
 fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<TaskTriageSummary> {
-    if !triage_has_changes(task.complete, task.epic_id) {
+    if !triage_has_changes(task.complete, task.epic_id, &task.metadata) {
         return Usage {
-            message: "task triage needs at least --epic-id or --complete".to_owned(),
+            message:
+                "task triage needs at least --epic-id, --complete, --priority, --owner, --clear-owner, --label, or --clear-labels"
+                    .to_owned(),
         }
         .fail();
     }
@@ -1015,6 +1123,7 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
     for task_id in &task_ids {
         let task_record = fetch_task_summary(client, server, *task_id)?;
         let mut changed = false;
+        let next_metadata = apply_metadata_patch(&task_record.metadata, &task.metadata);
 
         if let Some(epic_id) = task.epic_id {
             if task_record.epic_id != Some(epic_id) {
@@ -1025,11 +1134,27 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
                     title: task_record.title.clone(),
                     details: task_record.details.clone(),
                     epic_id: Some(epic_id),
+                    metadata: next_metadata.clone(),
                 };
                 let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
                 updated_task_ids.push(*task_id);
                 changed = true;
             }
+        }
+
+        if !changed && task_metadata_changed(&task_record.metadata, &next_metadata) {
+            let request = UpdateTaskRequest {
+                workspace: task.workspace.clone(),
+                actor: task.actor.clone(),
+                task_id: *task_id,
+                title: task_record.title.clone(),
+                details: task_record.details.clone(),
+                epic_id: task_record.epic_id,
+                metadata: next_metadata,
+            };
+            let _: serde_json::Value = post_json(client, server, "/v1/tasks/update", &request)?;
+            updated_task_ids.push(*task_id);
+            changed = true;
         }
 
         if task.complete && task_record.status != "completed" {
@@ -1049,8 +1174,13 @@ fn triage_tasks(client: &Client, server: &str, task: &TriageTasks) -> Result<Tas
     }
 
     Ok(TaskTriageSummary {
+        clear_labels: task.metadata.clear_labels,
+        clear_owner: task.metadata.clear_owner,
         completed_task_ids,
         epic_id: task.epic_id,
+        labels: triage_summary_labels(&task.metadata),
+        owner: triage_summary_owner(&task.metadata),
+        priority: task.metadata.priority.map(task_priority_from_cli),
         task_ids,
         unchanged_task_ids,
         updated_task_ids,
@@ -1067,7 +1197,71 @@ pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
         .collect()
 }
 
-#[inline]
-pub(crate) const fn triage_has_changes(complete: bool, epic_id: Option<Uuid>) -> bool {
-    complete || epic_id.is_some()
+fn task_metadata_from_args(metadata: TaskMetadataArgs) -> TaskMetadata {
+    TaskMetadata {
+        labels: normalize_task_labels(metadata.label),
+        owner: normalize_task_owner(metadata.owner),
+        priority: task_priority_from_cli(metadata.priority),
+    }
+}
+
+fn apply_metadata_patch(current: &TaskMetadata, patch: &TaskMetadataPatchArgs) -> TaskMetadata {
+    let labels = if patch.clear_labels {
+        Vec::new()
+    } else if patch.label.is_empty() {
+        current.labels.clone()
+    } else {
+        normalize_task_labels(patch.label.clone())
+    };
+    let owner = if patch.clear_owner {
+        None
+    } else if patch.owner.is_some() {
+        normalize_task_owner(patch.owner.clone())
+    } else {
+        current.owner.clone()
+    };
+
+    TaskMetadata {
+        labels,
+        owner,
+        priority: patch.priority.map_or(current.priority, task_priority_from_cli),
+    }
+}
+
+fn task_metadata_changed(current: &TaskMetadata, next: &TaskMetadata) -> bool {
+    current != next
+}
+
+fn triage_summary_labels(metadata: &TaskMetadataPatchArgs) -> Option<Vec<String>> {
+    if metadata.clear_labels {
+        return Some(Vec::new());
+    }
+    (!metadata.label.is_empty()).then(|| normalize_task_labels(metadata.label.clone()))
+}
+
+fn triage_summary_owner(metadata: &TaskMetadataPatchArgs) -> Option<String> {
+    normalize_task_owner(metadata.owner.clone())
+}
+
+pub(crate) fn triage_has_changes(
+    complete: bool,
+    epic_id: Option<Uuid>,
+    metadata: &TaskMetadataPatchArgs,
+) -> bool {
+    complete
+        || epic_id.is_some()
+        || metadata.priority.is_some()
+        || metadata.clear_owner
+        || metadata.owner.is_some()
+        || metadata.clear_labels
+        || !metadata.label.is_empty()
+}
+
+const fn task_priority_from_cli(priority: TaskPriorityValue) -> TaskPriority {
+    match priority {
+        TaskPriorityValue::Low => TaskPriority::Low,
+        TaskPriorityValue::Medium => TaskPriority::Medium,
+        TaskPriorityValue::High => TaskPriority::High,
+        TaskPriorityValue::Urgent => TaskPriority::Urgent,
+    }
 }

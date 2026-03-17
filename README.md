@@ -124,6 +124,10 @@ cargo run -p threadplane-cli -- task offer \
   --author operator \
   --epic-id <epic-id> \
   --depends-on <dependency-task-id> \
+  --priority high \
+  --owner codex \
+  --label agent \
+  --label workflow \
   --title "Investigate tuple leases" \
   --details "Need a shared lease-backed claim flow with dependency tracking."
 ```
@@ -160,6 +164,9 @@ cargo run -p threadplane-cli -- task triage \
   --workspace shared-lab \
   --actor operator \
   --epic-id <epic-id> \
+  --priority low \
+  --owner backlog \
+  --label triaged \
   --complete \
   --task-id <task-a-id> \
   --task-id <task-b-id>
@@ -222,12 +229,13 @@ Current commands:
 - `task depend`
 - `task dag`
 - `task list`
-  - supports `--limit` and `--format compact` for concise ready queues
+  - supports `--limit`, `--format compact`, `--priority`, `--owner`, and `--label`
 - `task update`
 - `task claim`
 - `task release`
 - `task show`
 - `task triage`
+  - supports bulk epic assignment plus durable metadata updates
 - `task context`
 - `link add`
 - `link xanadu`

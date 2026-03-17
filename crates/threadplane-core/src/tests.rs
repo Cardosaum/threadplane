@@ -5,8 +5,9 @@ use uuid::Uuid;
 
 use crate::{
     build_info, compare_build_info, default_config_path, default_system_config_path,
-    epic_entity_ref, note_entity_ref, parse_entity_ref, relation_type, scope_summary,
-    service_snapshot, task_entity_ref, EntityRef, EventKind, ThreadplaneConfig,
+    epic_entity_ref, normalize_task_labels, normalize_task_owner, note_entity_ref,
+    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref,
+    EntityRef, EventKind, TaskPriority, ThreadplaneConfig,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -171,6 +172,36 @@ fn threadplane_config_defaults_match_local_poc_expectations() {
     assert_eq!(config.server.neo4j_password, None);
     assert_eq!(config.server.neo4j_uri, None);
     assert_eq!(config.server.neo4j_user, None);
+}
+
+#[rstest]
+#[case(vec![" Workflow ".to_owned(), "agent".to_owned(), "workflow".to_owned()], vec!["agent".to_owned(), "workflow".to_owned()])]
+#[case(vec![String::new(), "   ".to_owned()], Vec::<String>::new())]
+fn normalize_task_labels_sorts_dedups_and_trims(
+    #[case] input: Vec<String>,
+    #[case] expected: Vec<String>,
+) {
+    assert_eq!(normalize_task_labels(input), expected);
+}
+
+#[rstest]
+#[case(Some(" codex ".to_owned()), Some("codex".to_owned()))]
+#[case(Some("   ".to_owned()), None)]
+#[case(None, None)]
+fn normalize_task_owner_trims_and_discards_empty_values(
+    #[case] input: Option<String>,
+    #[case] expected: Option<String>,
+) {
+    assert_eq!(normalize_task_owner(input), expected);
+}
+
+#[rstest]
+#[case("low", TaskPriority::Low)]
+#[case("medium", TaskPriority::Medium)]
+#[case("high", TaskPriority::High)]
+#[case("urgent", TaskPriority::Urgent)]
+fn task_priority_parses_snake_case_values(#[case] input: &str, #[case] expected: TaskPriority) {
+    assert_eq!(input.parse::<TaskPriority>().ok(), Some(expected));
 }
 
 proptest::proptest! {

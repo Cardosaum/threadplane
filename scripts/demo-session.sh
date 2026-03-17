@@ -24,6 +24,9 @@ task_a_json="$("$TP_BIN" task offer \
     --workspace "$WORKSPACE" \
     --author operator \
     --epic-id "$epic_id" \
+    --priority high \
+    --owner platform \
+    --label hardening \
     --title "Harden the write path" \
     --details "Ship auth, idempotency, and replay-safe projections.")"
 task_a_id="$(jq -r '.data.task_id' <<<"$task_a_json")"
@@ -33,6 +36,10 @@ task_b_json="$("$TP_BIN" task offer \
     --author operator \
     --epic-id "$epic_id" \
     --depends-on "$task_a_id" \
+    --priority urgent \
+    --owner codex \
+    --label agent \
+    --label benchmark \
     --title "Benchmark concurrency" \
     --details "Measure mixed read and write load before broad rollout.")"
 task_b_id="$(jq -r '.data.task_id' <<<"$task_b_json")"
@@ -66,5 +73,5 @@ run "threadplane-cli link xanadu --workspace \"$WORKSPACE\" --actor agent-a --fr
     "\"$TP_BIN\" link xanadu --workspace \"$WORKSPACE\" --actor agent-a --from \"$task_b_ref\" --to \"$note_ref\" | jq '{relation: .data.relation, transclusion_id: .data.transclusion_id}'"
 run "threadplane-cli note update --workspace \"$WORKSPACE\" --actor agent-a --note-id \"$note_id\" ... | jq '{title: .data.title, transclusion_id: .data.transclusion_id}'" \
     "\"$TP_BIN\" note update --workspace \"$WORKSPACE\" --actor agent-a --note-id \"$note_id\" --title 'Concurrency benchmark plan' --body 'Track latency, throughput, projection lag, and claim contention.' | jq '{title: .data.title, transclusion_id: .data.transclusion_id}'"
-run "threadplane-cli task show --task-id \"$task_b_id\" | jq '{title: .data.title, details: .data.details, transclusion_id: .data.transclusion_id}'" \
-    "\"$TP_BIN\" task show --task-id \"$task_b_id\" | jq '{title: .data.title, details: .data.details, transclusion_id: .data.transclusion_id}'"
+run "threadplane-cli task show --task-id \"$task_b_id\" | jq '{title: .data.title, priority: .data.priority, owner: .data.owner, labels: .data.labels, transclusion_id: .data.transclusion_id}'" \
+    "\"$TP_BIN\" task show --task-id \"$task_b_id\" | jq '{title: .data.title, priority: .data.priority, owner: .data.owner, labels: .data.labels, transclusion_id: .data.transclusion_id}'"

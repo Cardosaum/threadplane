@@ -9,13 +9,14 @@ pub use self::config::{
 };
 pub use self::types::{
     build_info, compare_build_info, epic_entity_ref, health_summary, note_entity_ref,
-    parse_entity_ref, relation_type, scope_summary, service_snapshot, task_entity_ref,
-    AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, BuildComparison, BuildFieldDifference,
-    BuildInfo, ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityRef, EpicRecord, EventEnvelope, EventKind, EventRecord,
-    GraphRelation, LinkRecord, NoteRecord, OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot,
-    TaskClaimRecord, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry, TaskRecord,
-    TaskSummary, UpdateNoteRequest, UpdateTaskRequest,
+    normalize_task_labels, normalize_task_owner, parse_entity_ref, relation_type, scope_summary,
+    service_snapshot, task_entity_ref, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope,
+    BuildComparison, BuildFieldDifference, BuildInfo, ClaimTaskRequest, CompleteTaskRequest,
+    CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest, EntityRef, EpicRecord,
+    EventEnvelope, EventKind, EventRecord, GraphRelation, LinkRecord, NoteRecord,
+    OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
+    TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary,
+    UpdateNoteRequest, UpdateTaskRequest,
 };
 
 #[cfg(test)]

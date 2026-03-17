@@ -82,6 +82,9 @@ fn event_kind_round_trips_through_storage_names(
 #[case("CREATE TABLE IF NOT EXISTS transclusion_groups")]
 #[case("ALTER TABLE notes ADD COLUMN IF NOT EXISTS transclusion_id UUID")]
 #[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS epic_id UUID")]
+#[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'medium'")]
+#[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner TEXT")]
+#[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'")]
 #[case("ALTER TABLE tasks ADD COLUMN IF NOT EXISTS transclusion_id UUID")]
 fn schema_statements_cover_poc_storage_surfaces(#[case] expected_fragment: &str) {
     let has_fragment = schema_statements()

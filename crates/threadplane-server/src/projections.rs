@@ -178,6 +178,9 @@ pub(crate) async fn project_task(graph: &Graph, task: &TaskRecord) -> ServerResu
                     task.details = $details,
                     task.status = $status,
                     task.epic_id = $epic_id,
+                    task.priority = $priority,
+                    task.owner = $owner,
+                    task.labels = $labels,
                     task.transclusion_id = $transclusion_id,
                     task.created_at = $created_at,
                     task.updated_at = $updated_at
@@ -208,6 +211,9 @@ pub(crate) async fn project_task(graph: &Graph, task: &TaskRecord) -> ServerResu
                 "epic_id",
                 task.epic_id.map(|id| id.to_string()).unwrap_or_default(),
             )
+            .param("priority", task.metadata.priority.to_string())
+            .param("owner", task.metadata.owner.clone().unwrap_or_default())
+            .param("labels", task.metadata.labels.clone())
             .param(
                 "epic_ref",
                 task.epic_id.map(epic_entity_ref).unwrap_or_default(),

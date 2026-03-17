@@ -11,13 +11,14 @@ use core::str::FromStr as _;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
-use sqlx::{query_as, FromRow, PgPool, Postgres, Transaction};
+use sqlx::{query_as, FromRow, PgPool, Postgres, QueryBuilder, Transaction};
 use uuid::Uuid;
 
 use crate::error::{ServerResult, ThreadplaneServerError};
 use threadplane_core::{
-    epic_entity_ref, note_entity_ref, parse_entity_ref, task_entity_ref, EntityRef, EpicRecord,
-    EventKind, EventRecord, TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskRecord,
+    epic_entity_ref, normalize_task_labels, normalize_task_owner, note_entity_ref,
+    parse_entity_ref, task_entity_ref, EntityRef, EpicRecord, EventKind, EventRecord,
+    TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
     TaskSummary, DEPENDS_ON_RELATION,
 };
 
@@ -58,6 +59,9 @@ pub(crate) const TASK_SELECT: &str = "
         details,
         status,
         epic_id,
+        priority,
+        owner,
+        labels,
         transclusion_id,
         created_at,
         COALESCE(updated_at, created_at) AS updated_at
@@ -121,6 +125,9 @@ pub(crate) const fn schema_statements() -> &'static [&'static str] {
             details TEXT NOT NULL,
             status TEXT NOT NULL,
             epic_id UUID NULL,
+            priority TEXT NOT NULL DEFAULT 'medium',
+            owner TEXT NULL,
+            labels TEXT[] NOT NULL DEFAULT '{}',
             created_at TIMESTAMPTZ NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL
         )
@@ -177,6 +184,9 @@ pub(crate) const fn schema_statements() -> &'static [&'static str] {
         "UPDATE epics SET updated_at = created_at WHERE updated_at IS NULL",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS transclusion_id UUID",
         "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS epic_id UUID",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'medium'",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS owner TEXT",
+        "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS labels TEXT[] NOT NULL DEFAULT '{}'",
         "ALTER TABLE links ADD COLUMN IF NOT EXISTS is_xanadu BOOLEAN NOT NULL DEFAULT false",
         "ALTER TABLE links ADD COLUMN IF NOT EXISTS transclusion_id UUID",
         "UPDATE notes SET updated_at = created_at WHERE updated_at IS NULL",
@@ -191,6 +201,18 @@ pub(crate) const fn schema_statements() -> &'static [&'static str] {
         "
         CREATE INDEX IF NOT EXISTS idx_tasks_workspace_epic_id_created_at
         ON tasks (workspace, epic_id, created_at DESC)
+        ",
+        "
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_priority_created_at
+        ON tasks (workspace, priority, created_at DESC)
+        ",
+        "
+        CREATE INDEX IF NOT EXISTS idx_tasks_workspace_owner_created_at
+        ON tasks (workspace, owner, created_at DESC)
+        ",
+        "
+        CREATE INDEX IF NOT EXISTS idx_tasks_labels_gin
+        ON tasks USING GIN (labels)
         ",
         "
         CREATE INDEX IF NOT EXISTS idx_task_claims_task_id_expires_at
@@ -543,14 +565,22 @@ pub(crate) async fn fetch_epic_for_task(
     Ok(None)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TaskListFilters<'filter> {
+    pub(crate) epic_id: Option<Uuid>,
+    pub(crate) label: Option<&'filter str>,
+    pub(crate) owner: Option<&'filter str>,
+    pub(crate) priority: Option<TaskPriority>,
+    pub(crate) ready_only: bool,
+    pub(crate) status: Option<&'filter str>,
+}
+
 pub(crate) async fn fetch_tasks_for_listing(
     pool: &PgPool,
     workspace: &str,
-    status_filter: Option<&str>,
-    epic_id: Option<Uuid>,
-    ready_only: bool,
+    filters: TaskListFilters<'_>,
 ) -> ServerResult<Vec<TaskRow>> {
-    if let Some(filter_value) = status_filter {
+    if let Some(filter_value) = filters.status {
         if !matches!(filter_value, "open" | "claimed" | "completed") {
             return Err(ThreadplaneServerError::bad_request(format!(
                 "unsupported task status filter {filter_value}"
@@ -558,68 +588,42 @@ pub(crate) async fn fetch_tasks_for_listing(
         }
     }
 
-    let sql = match (status_filter, epic_id) {
-        (Some(_), Some(_)) => format!(
-            "
-            {TASK_SELECT}
-            WHERE workspace = $1
-              AND status = $2
-              AND epic_id = $3
-            ORDER BY created_at DESC
-            "
-        ),
-        (Some(_), None) => format!(
-            "
-            {TASK_SELECT}
-            WHERE workspace = $1
-              AND status = $2
-            ORDER BY created_at DESC
-            "
-        ),
-        (None, Some(_)) => format!(
-            "
-            {TASK_SELECT}
-            WHERE workspace = $1
-              AND epic_id = $2
-            ORDER BY created_at DESC
-            "
-        ),
-        (None, None) => format!(
-            "
-            {TASK_SELECT}
-            WHERE workspace = $1
-            ORDER BY created_at DESC
-            "
-        ),
-    };
+    let normalized_owner = normalize_task_owner(filters.owner.map(str::to_owned));
+    let normalized_label =
+        normalize_task_labels(filters.label.map(str::to_owned).into_iter().collect())
+            .into_iter()
+            .next();
+    let mut query = QueryBuilder::<Postgres>::new(TASK_SELECT);
+    query.push(" WHERE workspace = ");
+    query.push_bind(workspace);
 
-    let rows: Vec<TaskRow> = match (status_filter, epic_id) {
-        (Some(filter_value), Some(selected_epic_id)) => {
-            query_as(&sql)
-                .bind(workspace)
-                .bind(filter_value)
-                .bind(selected_epic_id)
-                .fetch_all(pool)
-                .await?
-        }
-        (Some(filter_value), None) => {
-            query_as(&sql)
-                .bind(workspace)
-                .bind(filter_value)
-                .fetch_all(pool)
-                .await?
-        }
-        (None, Some(selected_epic_id)) => {
-            query_as(&sql)
-                .bind(workspace)
-                .bind(selected_epic_id)
-                .fetch_all(pool)
-                .await?
-        }
-        (None, None) => query_as(&sql).bind(workspace).fetch_all(pool).await?,
-    };
+    if let Some(filter_value) = filters.status {
+        query.push(" AND status = ");
+        query.push_bind(filter_value);
+    }
+    if let Some(selected_epic_id) = filters.epic_id {
+        query.push(" AND epic_id = ");
+        query.push_bind(selected_epic_id);
+    }
+    if let Some(selected_priority) = filters.priority {
+        query.push(" AND priority = ");
+        query.push_bind(selected_priority.to_string());
+    }
+    if let Some(selected_owner) = normalized_owner {
+        query.push(" AND owner = ");
+        query.push_bind(selected_owner);
+    }
+    if let Some(selected_label) = normalized_label {
+        query.push(" AND ");
+        query.push_bind(selected_label);
+        query.push(" = ANY(labels)");
+    }
 
-    if ready_only {
+    query.push(" ORDER BY created_at DESC");
+
+    let rows = query.build_query_as::<TaskRow>().fetch_all(pool).await?;
+
+    if filters.ready_only {
         let mut ready_rows = Vec::new();
         for row in rows {
             if task_is_ready(pool, row.task_id).await? {
@@ -1046,6 +1050,9 @@ pub(crate) struct TaskRow {
     details: String,
     pub(crate) status: String,
     pub(crate) epic_id: Option<Uuid>,
+    priority: String,
+    owner: Option<String>,
+    labels: Vec<String>,
     pub(crate) transclusion_id: Option<Uuid>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -1149,6 +1156,7 @@ impl From<NoteRow> for threadplane_core::NoteRecord {
 impl From<TaskRow> for TaskRecord {
     #[inline]
     fn from(value: TaskRow) -> Self {
+        let metadata = task_metadata_from_row(&value);
         Self {
             task_id: value.task_id,
             entity_ref: task_entity_ref(value.task_id),
@@ -1159,6 +1167,7 @@ impl From<TaskRow> for TaskRecord {
             details: value.details,
             status: value.status,
             epic_id: value.epic_id,
+            metadata,
             transclusion_id: value.transclusion_id,
             created_at: value.created_at.to_rfc3339(),
             updated_at: value.updated_at.to_rfc3339(),
@@ -1169,6 +1178,7 @@ impl From<TaskRow> for TaskRecord {
 impl From<TaskRow> for TaskSummary {
     #[inline]
     fn from(value: TaskRow) -> Self {
+        let metadata = task_metadata_from_row(&value);
         Self {
             task_id: value.task_id,
             entity_ref: task_entity_ref(value.task_id),
@@ -1178,11 +1188,24 @@ impl From<TaskRow> for TaskSummary {
             status: value.status,
             epic_id: value.epic_id,
             author: value.author,
+            metadata,
             transclusion_id: value.transclusion_id,
             created_at: value.created_at.to_rfc3339(),
             updated_at: value.updated_at.to_rfc3339(),
         }
     }
+}
+
+fn task_metadata_from_row(value: &TaskRow) -> TaskMetadata {
+    TaskMetadata {
+        labels: normalize_task_labels(value.labels.clone()),
+        owner: normalize_task_owner(value.owner.clone()),
+        priority: parse_task_priority(&value.priority),
+    }
+}
+
+fn parse_task_priority(value: &str) -> TaskPriority {
+    value.parse().unwrap_or_default()
 }
 
 impl From<ClaimRow> for TaskClaimRecord {

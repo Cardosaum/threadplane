@@ -101,6 +101,8 @@ pub struct OfferTaskRequest {
     pub depends_on: Vec<Uuid>,
     pub details: String,
     pub epic_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub metadata: TaskMetadata,
     pub title: String,
     pub workspace: String,
 }
@@ -110,6 +112,8 @@ pub struct UpdateTaskRequest {
     pub actor: String,
     pub details: String,
     pub epic_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub metadata: TaskMetadata,
     pub task_id: Uuid,
     pub title: String,
     pub workspace: String,
@@ -197,6 +201,36 @@ pub struct EpicRecord {
     pub workspace: String,
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Serialize,
+    Deserialize,
+    strum::Display,
+    strum::EnumIter,
+    strum::EnumString,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum TaskPriority {
+    High,
+    Low,
+    #[default]
+    Medium,
+    Urgent,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskMetadata {
+    pub labels: Vec<String>,
+    pub owner: Option<String>,
+    pub priority: TaskPriority,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
     pub author: String,
@@ -205,6 +239,8 @@ pub struct TaskRecord {
     pub entity_ref: String,
     pub epic_id: Option<Uuid>,
     pub event_id: Uuid,
+    #[serde(flatten)]
+    pub metadata: TaskMetadata,
     pub status: String,
     pub task_id: Uuid,
     pub title: String,
@@ -255,6 +291,8 @@ pub struct TaskSummary {
     pub details: String,
     pub entity_ref: String,
     pub epic_id: Option<Uuid>,
+    #[serde(flatten)]
+    pub metadata: TaskMetadata,
     pub status: String,
     pub task_id: Uuid,
     pub title: String,
@@ -327,6 +365,27 @@ pub enum EntityRef {
     Note(Uuid),
     #[display("task:{_0}")]
     Task(Uuid),
+}
+
+#[inline]
+#[must_use]
+pub fn normalize_task_labels(labels: Vec<String>) -> Vec<String> {
+    let mut normalized = labels
+        .into_iter()
+        .map(|label| label.trim().to_ascii_lowercase())
+        .filter(|label| !label.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
+}
+
+#[inline]
+#[must_use]
+pub fn normalize_task_owner(owner: Option<String>) -> Option<String> {
+    let value = owner?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 #[inline]

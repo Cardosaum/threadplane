@@ -98,6 +98,8 @@ dependency_task_json="$(
         --workspace "$WORKSPACE" \
         --author operator \
         --epic-id "$epic_id" \
+        --owner platform \
+        --label workflow \
         --title "Ship durable task lifecycle" \
         --details "Completion should unlock dependent work."
 )"
@@ -110,6 +112,10 @@ task_json="$(
         --author operator \
         --epic-id "$epic_id" \
         --depends-on "$dependency_task_id" \
+        --priority high \
+        --owner codex \
+        --label agent \
+        --label workflow \
         --title "Investigate tuple leases" \
         --details "Need a shared lease-backed claim flow with dependency tracking."
 )"
@@ -123,6 +129,9 @@ task_show_json="$(
 )"
 [[ "$(jq -r '.data.title' <<<"$task_show_json")" == "Investigate tuple leases" ]]
 [[ "$(jq -r '.data.details' <<<"$task_show_json")" == "Need a shared lease-backed claim flow with dependency tracking." ]]
+[[ "$(jq -r '.data.priority' <<<"$task_show_json")" == "high" ]]
+[[ "$(jq -r '.data.owner' <<<"$task_show_json")" == "codex" ]]
+[[ "$(jq -r '.data.labels | join(",")' <<<"$task_show_json")" == "agent,workflow" ]]
 
 task_list_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -133,6 +142,33 @@ task_list_json="$(
 [[ "$(jq -r '.data | length' <<<"$task_list_json")" == "2" ]]
 [[ "$(jq -r --arg task_id "$task_id" '.data[] | select(.task.task_id == $task_id) | .ready' <<<"$task_list_json")" == "false" ]]
 [[ "$(jq -r --arg task_id "$task_id" '.data[] | select(.task.task_id == $task_id) | .epic.epic_id' <<<"$task_list_json")" == "$epic_id" ]]
+[[ "$(jq -r --arg task_id "$task_id" '.data[] | select(.task.task_id == $task_id) | .task.priority' <<<"$task_list_json")" == "high" ]]
+
+owner_filtered_tasks_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --owner codex
+)"
+[[ "$(jq -r '.data | length' <<<"$owner_filtered_tasks_json")" == "1" ]]
+[[ "$(jq -r '.data[0].task.task_id' <<<"$owner_filtered_tasks_json")" == "$task_id" ]]
+
+label_filtered_tasks_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --label workflow
+)"
+[[ "$(jq -r '.data | length' <<<"$label_filtered_tasks_json")" == "2" ]]
+
+priority_filtered_tasks_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task list \
+        --workspace "$WORKSPACE" \
+        --priority high
+)"
+[[ "$(jq -r '.data | length' <<<"$priority_filtered_tasks_json")" == "1" ]]
+[[ "$(jq -r '.data[0].task.task_id' <<<"$priority_filtered_tasks_json")" == "$task_id" ]]
 
 dag_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -189,6 +225,9 @@ compact_ready_queue="$(
 )"
 [[ "$compact_ready_queue" == *"Canonical lease wording"* || "$compact_ready_queue" == *"Investigate tuple leases"* ]]
 [[ "$compact_ready_queue" == *"ready"* ]]
+[[ "$compact_ready_queue" == *"priority=high"* ]]
+[[ "$compact_ready_queue" == *"owner=codex"* ]]
+[[ "$compact_ready_queue" == *"labels=agent,workflow"* ]]
 
 note_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -239,6 +278,10 @@ task_update_json="$(
         --actor operator \
         --task-id "$task_id" \
         --epic-id "$epic_id" \
+        --priority urgent \
+        --owner ops \
+        --label xanadu \
+        --label sync \
         --title "Canonical lease wording" \
         --details "Updates from the task side should also rewrite the linked note."
 )"
@@ -251,6 +294,15 @@ note_after_task_update_json="$(
 [[ "$(jq -r '.data.title' <<<"$note_after_task_update_json")" == "Canonical lease wording" ]]
 [[ "$(jq -r '.data.body' <<<"$note_after_task_update_json")" == "Updates from the task side should also rewrite the linked note." ]]
 [[ "$(jq -r '.data.transclusion_id' <<<"$note_after_task_update_json")" == "$transclusion_id" ]]
+
+updated_task_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task show \
+        --task-id "$task_id"
+)"
+[[ "$(jq -r '.data.priority' <<<"$updated_task_show_json")" == "urgent" ]]
+[[ "$(jq -r '.data.owner' <<<"$updated_task_show_json")" == "ops" ]]
+[[ "$(jq -r '.data.labels | join(",")' <<<"$updated_task_show_json")" == "sync,xanadu" ]]
 
 triage_task_a_json="$(
     cargo run -q -p threadplane-cli -- \
@@ -278,6 +330,9 @@ triage_json="$(
         --workspace "$WORKSPACE" \
         --actor operator \
         --epic-id "$epic_id" \
+        --priority low \
+        --owner backlog \
+        --label triaged \
         --complete \
         --task-id "$triage_task_a_id" \
         --task-id "$triage_task_b_id"
@@ -285,6 +340,18 @@ triage_json="$(
 [[ "$(jq -r '.completed_task_ids | length' <<<"$triage_json")" == "2" ]]
 [[ "$(jq -r '.updated_task_ids | length' <<<"$triage_json")" == "2" ]]
 [[ "$(jq -r '.unchanged_task_ids | length' <<<"$triage_json")" == "0" ]]
+[[ "$(jq -r '.priority' <<<"$triage_json")" == "low" ]]
+[[ "$(jq -r '.owner' <<<"$triage_json")" == "backlog" ]]
+[[ "$(jq -r '.labels | join(",")' <<<"$triage_json")" == "triaged" ]]
+
+triage_task_a_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        task show \
+        --task-id "$triage_task_a_id"
+)"
+[[ "$(jq -r '.data.priority' <<<"$triage_task_a_show_json")" == "low" ]]
+[[ "$(jq -r '.data.owner' <<<"$triage_task_a_show_json")" == "backlog" ]]
+[[ "$(jq -r '.data.labels | join(",")' <<<"$triage_task_a_show_json")" == "triaged" ]]
 
 context_before_claim_json="$(
     cargo run -q -p threadplane-cli -- \

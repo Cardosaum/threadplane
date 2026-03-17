@@ -30,15 +30,16 @@ use crate::{
         fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_rows_for_workspace,
         fetch_note_by_id, fetch_note_by_id_tx, fetch_task_by_id, fetch_task_by_id_tx,
         fetch_tasks_for_listing, prepare_xanadu_group, sync_transclusion_members, task_is_ready,
-        unique_task_ids, update_transclusion_group,
+        unique_task_ids, update_transclusion_group, TaskListFilters,
     },
 };
 use threadplane_core::{
-    health_summary, scope_summary, service_snapshot, AddLinkRequest, AddTaskDependencyRequest,
-    ApiEnvelope, ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord,
-    OfferTaskRequest, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
-    TaskListEntry, TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION,
+    health_summary, normalize_task_labels, normalize_task_owner, scope_summary,
+    service_snapshot, AddLinkRequest, AddTaskDependencyRequest, ApiEnvelope, ClaimTaskRequest,
+    CompleteTaskRequest, CreateEpicRequest, CreateNoteRequest, CreateXanaduLinkRequest,
+    EpicRecord, EventKind, EventRecord, LinkRecord, NoteRecord, OfferTaskRequest,
+    ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskListEntry,
+    TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest, DEPENDS_ON_RELATION,
     XANADU_RELATION,
 };
 
@@ -53,7 +54,10 @@ pub(crate) struct ListQuery {
 #[derive(Debug, Deserialize)]
 pub(crate) struct TaskListQuery {
     epic_id: Option<Uuid>,
+    label: Option<String>,
     limit: Option<i64>,
+    owner: Option<String>,
+    priority: Option<TaskPriority>,
     ready_only: Option<bool>,
     status: Option<String>,
 }
@@ -282,8 +286,10 @@ pub(crate) async fn update_note(
 
 pub(crate) async fn offer_task(
     State(state): State<AppState>,
-    Json(request): Json<OfferTaskRequest>,
+    Json(mut request): Json<OfferTaskRequest>,
 ) -> AppResult<TaskRecord> {
+    request.metadata.labels = normalize_task_labels(request.metadata.labels);
+    request.metadata.owner = normalize_task_owner(request.metadata.owner);
     let mut tx = state.pool().begin().await?;
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
@@ -312,11 +318,14 @@ pub(crate) async fn offer_task(
             details,
             status,
             epic_id,
+            priority,
+            owner,
+            labels,
             transclusion_id,
             created_at,
             updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, NULL, $8, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, NULL, $11, $11)
         ",
     )
     .bind(task_id)
@@ -326,6 +335,9 @@ pub(crate) async fn offer_task(
     .bind(&request.title)
     .bind(&request.details)
     .bind(request.epic_id)
+    .bind(request.metadata.priority.to_string())
+    .bind(request.metadata.owner.clone())
+    .bind(request.metadata.labels.clone())
     .bind(created_at)
     .execute(&mut *tx)
     .await?;
@@ -362,8 +374,10 @@ pub(crate) async fn offer_task(
 
 pub(crate) async fn update_task(
     State(state): State<AppState>,
-    Json(request): Json<UpdateTaskRequest>,
+    Json(mut request): Json<UpdateTaskRequest>,
 ) -> AppResult<TaskRecord> {
+    request.metadata.labels = normalize_task_labels(request.metadata.labels);
+    request.metadata.owner = normalize_task_owner(request.metadata.owner);
     let mut tx = state.pool().begin().await?;
     let task = fetch_task_by_id_tx(&mut tx, request.task_id, &request.workspace).await?;
     if let Some(epic_id) = request.epic_id {
@@ -401,7 +415,10 @@ pub(crate) async fn update_task(
             SET title = $2,
                 details = $3,
                 epic_id = COALESCE($4, epic_id),
-                updated_at = $5
+                priority = $5,
+                owner = $6,
+                labels = $7,
+                updated_at = $8
             WHERE task_id = $1
             ",
         )
@@ -409,23 +426,32 @@ pub(crate) async fn update_task(
         .bind(&request.title)
         .bind(&request.details)
         .bind(request.epic_id)
+        .bind(request.metadata.priority.to_string())
+        .bind(request.metadata.owner.clone())
+        .bind(request.metadata.labels.clone())
         .bind(updated_at)
         .execute(&mut *tx)
         .await?;
         None
     };
 
-    if transclusion_id.is_some() && request.epic_id.is_some() {
+    if transclusion_id.is_some() {
         sqlx::query(
             "
             UPDATE tasks
             SET epic_id = COALESCE($2, epic_id),
-                updated_at = $3
+                priority = $3,
+                owner = $4,
+                labels = $5,
+                updated_at = $6
             WHERE task_id = $1
             ",
         )
         .bind(request.task_id)
         .bind(request.epic_id)
+        .bind(request.metadata.priority.to_string())
+        .bind(request.metadata.owner.clone())
+        .bind(request.metadata.labels.clone())
         .bind(updated_at)
         .execute(&mut *tx)
         .await?;
@@ -906,9 +932,14 @@ pub(crate) async fn list_tasks(
     let rows = fetch_tasks_for_listing(
         state.pool(),
         &workspace,
-        query.status.as_deref(),
-        query.epic_id,
-        query.ready_only.unwrap_or(false),
+        TaskListFilters {
+            epic_id: query.epic_id,
+            label: query.label.as_deref(),
+            owner: query.owner.as_deref(),
+            priority: query.priority,
+            ready_only: query.ready_only.unwrap_or(false),
+            status: query.status.as_deref(),
+        },
     )
     .await?;
     let limited_rows = truncate_results(rows, limit);
@@ -920,7 +951,16 @@ pub(crate) async fn list_open_tasks(
     State(state): State<AppState>,
     Path(workspace): Path<String>,
 ) -> AppResult<Vec<TaskListEntry>> {
-    let rows = fetch_tasks_for_listing(state.pool(), &workspace, Some("open"), None, false).await?;
+    let rows = fetch_tasks_for_listing(
+        state.pool(),
+        &workspace,
+        TaskListFilters {
+            ready_only: false,
+            status: Some("open"),
+            ..TaskListFilters::default()
+        },
+    )
+    .await?;
     let data = build_task_list_entries(state.pool(), rows).await?;
     Ok(Json(ApiEnvelope { ok: true, data }))
 }
