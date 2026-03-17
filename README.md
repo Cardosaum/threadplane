@@ -74,16 +74,22 @@ cargo run -p threadplane-server
 
 On startup, the server applies versioned `sqlx` migrations from [`crates/threadplane-server/migrations`](./crates/threadplane-server/migrations), catches the graph projection up from PostgreSQL, and keeps a replay worker running with persisted projection offsets. A fresh database bootstraps cleanly, and a stale or empty Neo4j graph can be rebuilt without inventing a second source of truth.
 
-4. In another terminal, inspect the service:
+4. Make the CLI available as `tplane`:
 
 ```bash
-cargo run -p threadplane-cli -- scope
-cargo run -p threadplane-cli -- projection status
-cargo run -p threadplane-cli -- config show
-cargo run -p threadplane-cli -- build compare
+cargo install --path crates/threadplane-cli --locked
 ```
 
-The compiled CLI binary name is `tplane`, so after `cargo build -p threadplane-cli` you can also run `./target/debug/tplane`.
+If you prefer not to install it, use `./target/debug/tplane` after `cargo build -p threadplane-cli`.
+
+5. In another terminal, inspect the service:
+
+```bash
+tplane scope
+tplane projection status
+tplane config show
+tplane build compare
+```
 
 `scope` now includes the running server build identity, including whether the binary came from a dirty worktree, so you can quickly confirm what your CLI is actually talking to.
 It also includes the persisted graph replay watermark and pending projection count, and `projection status` exposes the same data directly when you want an operational read instead of the broader product summary.
@@ -121,7 +127,7 @@ To capture durable local baselines for later comparison:
 Create an epic:
 
 ```bash
-cargo run -p threadplane-cli -- epic add \
+tplane epic add \
   --workspace shared-lab \
   --author operator \
   --title "Workflow foundations" \
@@ -131,7 +137,7 @@ cargo run -p threadplane-cli -- epic add \
 Create a dependency task:
 
 ```bash
-cargo run -p threadplane-cli -- task offer \
+tplane task offer \
   --workspace shared-lab \
   --author operator \
   --epic-id <epic-id> \
@@ -142,7 +148,7 @@ cargo run -p threadplane-cli -- task offer \
 Create a dependent task:
 
 ```bash
-cargo run -p threadplane-cli -- task offer \
+tplane task offer \
   --workspace shared-lab \
   --author operator \
   --epic-id <epic-id> \
@@ -158,21 +164,21 @@ cargo run -p threadplane-cli -- task offer \
 Inspect the DAG view:
 
 ```bash
-cargo run -p threadplane-cli -- task show --task-id <task-id>
-cargo run -p threadplane-cli -- task dag --task-id <task-id>
-cargo run -p threadplane-cli -- task blocked-by --task-id <task-id>
-cargo run -p threadplane-cli -- task blocks --task-id <dependency-task-id> --direct-only
+tplane task show --task-id <task-id>
+tplane task dag --task-id <task-id>
+tplane task blocked-by --task-id <task-id>
+tplane task blocks --task-id <dependency-task-id> --direct-only
 ```
 
 Complete the prerequisite and ask for ready work:
 
 ```bash
-cargo run -p threadplane-cli -- task complete \
+tplane task complete \
   --workspace shared-lab \
   --actor operator \
   --task-id <dependency-task-id>
 
-cargo run -p threadplane-cli -- task list \
+tplane task list \
   --workspace shared-lab \
   --status open \
   --ready-only \
@@ -185,11 +191,11 @@ Ready queues come back ordered by priority first and then recency, so the first 
 Pick or claim the best next task directly:
 
 ```bash
-cargo run -p threadplane-cli -- task next \
+tplane task next \
   --workspace shared-lab \
   --format compact
 
-cargo run -p threadplane-cli -- task claim-next \
+tplane task claim-next \
   --workspace shared-lab \
   --actor agent-b \
   --priority urgent \
@@ -199,7 +205,7 @@ cargo run -p threadplane-cli -- task claim-next \
 Bulk-triage multiple backlog items at once:
 
 ```bash
-cargo run -p threadplane-cli -- task triage \
+tplane task triage \
   --workspace shared-lab \
   --actor operator \
   --epic-id <epic-id> \
@@ -214,7 +220,7 @@ cargo run -p threadplane-cli -- task triage \
 Create a note:
 
 ```bash
-cargo run -p threadplane-cli -- note add \
+tplane note add \
   --workspace shared-lab \
   --author agent-a \
   --title "Lease design note" \
@@ -224,11 +230,11 @@ cargo run -p threadplane-cli -- note add \
 Explore related entities without going through a task-only context path:
 
 ```bash
-cargo run -p threadplane-cli -- entity show \
+tplane entity show \
   --entity-ref note:<note-id> \
   --format compact
 
-cargo run -p threadplane-cli -- entity related \
+tplane entity related \
   --entity-ref epic:<epic-id> \
   --format compact
 ```
@@ -236,11 +242,11 @@ cargo run -p threadplane-cli -- entity related \
 List or search notes without remembering UUIDs:
 
 ```bash
-cargo run -p threadplane-cli -- note list \
+tplane note list \
   --workspace shared-lab \
   --format compact
 
-cargo run -p threadplane-cli -- note search \
+tplane note search \
   --workspace shared-lab \
   --query "lease" \
   --format compact
@@ -249,7 +255,7 @@ cargo run -p threadplane-cli -- note search \
 Create a Xanadu link between them:
 
 ```bash
-cargo run -p threadplane-cli -- link xanadu \
+tplane link xanadu \
   --workspace shared-lab \
   --actor agent-a \
   --from task:<task-id> \
@@ -259,7 +265,7 @@ cargo run -p threadplane-cli -- link xanadu \
 Update one side and let the shared transclusion propagate:
 
 ```bash
-cargo run -p threadplane-cli -- note update \
+tplane note update \
   --workspace shared-lab \
   --actor agent-a \
   --note-id <note-id> \
@@ -270,13 +276,13 @@ cargo run -p threadplane-cli -- note update \
 Inspect the task with graph-backed context:
 
 ```bash
-cargo run -p threadplane-cli -- task context --task-id <task-id>
+tplane task context --task-id <task-id>
 ```
 
 Consume event history incrementally:
 
 ```bash
-cargo run -p threadplane-cli -- events tail \
+tplane events tail \
   --workspace shared-lab \
   --limit 25 \
   --format compact
@@ -349,15 +355,13 @@ See [etc/config.toml.example](./etc/config.toml.example) for the file format.
 Inspect the resolved config and discovery order:
 
 ```bash
-cargo run -p threadplane-cli -- config show
+tplane config show
 ```
 
 Use an explicit config file for a one-off run:
 
 ```bash
-cargo run -p threadplane-cli -- \
-  --config /path/to/config.toml \
-  scope
+tplane --config /path/to/config.toml scope
 ```
 
 Example:
