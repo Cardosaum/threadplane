@@ -97,7 +97,7 @@ async fn project_claimed_task_record(
     task: &TaskRow,
     task_record: &TaskRecord,
 ) -> ServerResult<()> {
-    project_task_record(graph, pool, task_record).await?;
+    mutations::project_task_record(graph, pool, task_record).await?;
     project_claim(graph, task, claim).await.map_err(|error| {
         error!(?error, task_id = %claim.task_id, "failed to project claim");
         ThreadplaneServerError::internal(error)
@@ -267,7 +267,7 @@ pub(crate) async fn release_task(
         .projection_coordinator(state.projection_coordinator())
         .workspace(&request.workspace)
         .event_id(event_id)
-        .operation(Box::pin(project_task_record(
+        .operation(Box::pin(mutations::project_task_record(
             state.graph(),
             state.pool(),
             &record,
@@ -368,7 +368,7 @@ pub(crate) async fn complete_task(
         .projection_coordinator(state.projection_coordinator())
         .workspace(&request.workspace)
         .event_id(event_id)
-        .operation(Box::pin(project_task_record(
+        .operation(Box::pin(mutations::project_task_record(
             state.graph(),
             state.pool(),
             &record,
@@ -392,7 +392,7 @@ pub(crate) async fn claim_next_task(
         .call()
         .await?;
     if let Some(priority) = &request.priority {
-        ensure_supported_task_priority()
+        mutations::ensure_supported_task_priority()
             .pool(state.pool())
             .bootstrap(state.bootstrap())
             .workspace(&request.workspace)
