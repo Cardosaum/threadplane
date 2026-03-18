@@ -38,6 +38,7 @@ mod executor;
 pub(crate) mod paths;
 mod reads;
 pub(crate) mod render;
+mod system;
 mod task;
 mod workspace;
 
@@ -45,13 +46,17 @@ mod workspace;
 mod tests_execution;
 
 pub(crate) use content::{
-    ListMemories, ListNotes, MemoryCommand, MemorySubcommand, NoteCommand, NoteSubcommand,
-    PrimeMemories, SearchNotes,
+    EpicCommand, EpicSubcommand, LinkCommand, LinkSubcommand, ListMemories, ListNotes,
+    MemoryCommand, MemorySubcommand, NoteCommand, NoteSubcommand, PrimeMemories, SearchNotes,
 };
 pub(crate) use executor::execute;
 pub(crate) use reads::{
     EntityCommand, EntitySubcommand, EventsCommand, EventsSubcommand, RelatedEntities, ShowEntity,
     TailEvents,
+};
+pub(crate) use system::{
+    BuildCommand, BuildSubcommand, ConfigCommand, ConfigSubcommand, ProjectionCommand,
+    ProjectionSubcommand,
 };
 #[expect(
     unused_imports,
@@ -127,139 +132,6 @@ enum Command {
     Scope,
     Task(TaskCommand),
     Workspace(WorkspaceCommand),
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Inspect and compare CLI/server build identity")]
-struct BuildCommand {
-    #[command(subcommand)]
-    command: BuildSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum BuildSubcommand {
-    #[command(about = "Compare the local CLI build with the running server build")]
-    Compare,
-    #[command(about = "Show the local threadplane-cli build identity")]
-    Show,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Create and inspect first-class epics")]
-struct EpicCommand {
-    #[command(subcommand)]
-    command: EpicSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum EpicSubcommand {
-    #[command(about = "Create a new epic")]
-    Add(AddEpic),
-    #[command(about = "List epics in a workspace")]
-    List(ListEpics),
-    #[command(about = "Fetch an epic by ID")]
-    Show(ShowEpic),
-}
-
-#[derive(Debug, Args)]
-struct AddEpic {
-    #[arg(long, help = "Epic author")]
-    author: String,
-
-    #[arg(long, help = "Epic body")]
-    body: String,
-
-    #[arg(long, help = "Epic title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ListEpics {
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ShowEpic {
-    #[arg(long, help = "Epic UUID")]
-    epic_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Inspect configuration discovery and the resolved runtime config")]
-struct ConfigCommand {
-    #[command(subcommand)]
-    command: ConfigSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ConfigSubcommand {
-    #[command(about = "Print the resolved config and where threadplane looks for it")]
-    Show,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Create semantic and Xanadu links between entities")]
-struct LinkCommand {
-    #[command(subcommand)]
-    command: LinkSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum LinkSubcommand {
-    #[command(about = "Create a semantic graph link between two entities")]
-    Add(AddLink),
-    #[command(about = "Create a Xanadu transclusion link between two text entities")]
-    Xanadu(AddXanaduLink),
-}
-
-#[derive(Debug, Args)]
-struct AddLink {
-    #[arg(long, help = "Actor creating the link")]
-    actor: String,
-
-    #[arg(long, help = "Source entity ref, for example task:<uuid>")]
-    from: String,
-
-    #[arg(long, help = "Relationship name, for example depends_on")]
-    relation: String,
-
-    #[arg(long, help = "Target entity ref, for example note:<uuid>")]
-    to: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct AddXanaduLink {
-    #[arg(long, help = "Actor creating the Xanadu link")]
-    actor: String,
-
-    #[arg(long, help = "Source entity ref, for example task:<uuid>")]
-    from: String,
-
-    #[arg(long, help = "Target entity ref, for example note:<uuid>")]
-    to: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Inspect graph projection replay status")]
-struct ProjectionCommand {
-    #[command(subcommand)]
-    command: ProjectionSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum ProjectionSubcommand {
-    #[command(about = "Show the persisted replay watermark for the graph projection")]
-    Status,
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]

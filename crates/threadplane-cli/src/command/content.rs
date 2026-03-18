@@ -82,6 +82,50 @@ pub(crate) struct AddMemory {
 }
 
 #[derive(Debug, Args)]
+#[command(about = "Create and inspect first-class epics")]
+pub(crate) struct EpicCommand {
+    #[command(subcommand)]
+    pub(crate) command: EpicSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum EpicSubcommand {
+    #[command(about = "Create a new epic")]
+    Add(AddEpic),
+    #[command(about = "List epics in a workspace")]
+    List(ListEpics),
+    #[command(about = "Fetch an epic by ID")]
+    Show(ShowEpic),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AddEpic {
+    #[arg(long, help = "Epic author")]
+    pub(crate) author: String,
+
+    #[arg(long, help = "Epic body")]
+    pub(crate) body: String,
+
+    #[arg(long, help = "Epic title")]
+    pub(crate) title: String,
+
+    #[arg(long, help = "Workspace name")]
+    pub(crate) workspace: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ListEpics {
+    #[arg(long, help = "Workspace name")]
+    pub(crate) workspace: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ShowEpic {
+    #[arg(long, help = "Epic UUID")]
+    pub(crate) epic_id: Uuid,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct ListMemories {
     #[arg(
         long,
@@ -154,6 +198,54 @@ pub(crate) struct PrimeMemories {
 pub(crate) struct ShowMemory {
     #[arg(long, help = "Memory UUID")]
     pub(crate) memory_id: Uuid,
+}
+
+#[derive(Debug, Args)]
+#[command(about = "Create semantic and Xanadu links between entities")]
+pub(crate) struct LinkCommand {
+    #[command(subcommand)]
+    pub(crate) command: LinkSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum LinkSubcommand {
+    #[command(about = "Create a semantic graph link between two entities")]
+    Add(AddLink),
+    #[command(about = "Create a Xanadu transclusion link between two text entities")]
+    Xanadu(AddXanaduLink),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AddLink {
+    #[arg(long, help = "Actor creating the link")]
+    pub(crate) actor: String,
+
+    #[arg(long, help = "Source entity ref, for example task:<uuid>")]
+    pub(crate) from: String,
+
+    #[arg(long, help = "Relationship name, for example depends_on")]
+    pub(crate) relation: String,
+
+    #[arg(long, help = "Target entity ref, for example note:<uuid>")]
+    pub(crate) to: String,
+
+    #[arg(long, help = "Workspace name")]
+    pub(crate) workspace: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AddXanaduLink {
+    #[arg(long, help = "Actor creating the Xanadu link")]
+    pub(crate) actor: String,
+
+    #[arg(long, help = "Source entity ref, for example task:<uuid>")]
+    pub(crate) from: String,
+
+    #[arg(long, help = "Target entity ref, for example note:<uuid>")]
+    pub(crate) to: String,
+
+    #[arg(long, help = "Workspace name")]
+    pub(crate) workspace: String,
 }
 
 #[derive(Debug, Args)]
