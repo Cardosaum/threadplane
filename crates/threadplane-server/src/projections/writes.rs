@@ -1,93 +1,13 @@
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "Projection helpers are crate-local adapters around Neo4j."
-)]
-
 use neo4rs::query;
-use sqlx::query_as;
 
 use crate::{
     prelude::*,
-    storage::{
-        fetch_direct_dependencies, fetch_epic_by_id, fetch_task_by_id, NoteRow, TaskRow,
-        NOTE_SELECT, TASK_SELECT,
-    },
+    storage::{fetch_direct_dependencies, fetch_epic_by_id, fetch_task_by_id, TaskRow},
 };
 use threadplane_core::{
-    epic_entity_ref, relation_type, task_entity_ref, EpicRecord, GraphRelation, LinkRecord,
-    MemoryRecord, NoteRecord, TaskClaimRecord, TaskRecord,
+    epic_entity_ref, relation_type, task_entity_ref, EpicRecord, LinkRecord, MemoryRecord,
+    NoteRecord, TaskClaimRecord, TaskRecord,
 };
-
-pub(crate) async fn fetch_entity_relations(
-    graph: &Graph,
-    entity_ref: &str,
-) -> ServerResult<Vec<GraphRelation>> {
-    let mut result = graph
-        .execute(
-            query(
-                "
-                MATCH (entity:Entity {entity_ref: $entity_ref})
-                OPTIONAL MATCH (entity)-[rel]-(other:Entity)
-                RETURN
-                  DISTINCT type(rel) AS relation,
-                  CASE
-                    WHEN rel IS NULL THEN NULL
-                    WHEN startNode(rel).entity_ref = $entity_ref THEN 'outgoing'
-                    ELSE 'incoming'
-                  END AS direction,
-                  other.entity_ref AS entity_ref,
-                  coalesce(other.kind, 'unknown') AS entity_kind,
-                  other.title AS title,
-                  coalesce(other.body, other.details) AS body,
-                  NULLIF(other.transclusion_id, '') AS transclusion_id
-                ORDER BY relation, entity_ref
-                ",
-            )
-            .param("entity_ref", entity_ref.to_owned()),
-        )
-        .await?;
-
-    let mut relations = Vec::new();
-    loop {
-        let maybe_row = result.next().await?;
-        let Some(row) = maybe_row else {
-            break;
-        };
-
-        let relation_opt: Option<String> = row.get("relation")?;
-        let related_entity_ref_opt: Option<String> = row.get("entity_ref")?;
-        let entity_kind_opt: Option<String> = row.get("entity_kind")?;
-        let direction_opt: Option<String> = row.get("direction")?;
-        let title: Option<String> = row.get("title")?;
-        let body: Option<String> = row.get("body")?;
-        let transclusion_id: Option<String> = row.get("transclusion_id")?;
-
-        if let (Some(relation), Some(related_entity_ref), Some(entity_kind), Some(direction)) = (
-            relation_opt,
-            related_entity_ref_opt,
-            entity_kind_opt,
-            direction_opt,
-        ) {
-            relations.push(GraphRelation {
-                relation,
-                direction,
-                entity_ref: related_entity_ref,
-                entity_kind,
-                title,
-                body,
-                transclusion_id: transclusion_id.and_then(|raw| Uuid::parse_str(&raw).ok()),
-            });
-        }
-    }
-
-    Ok(deduplicate_graph_relations(relations))
-}
-
-pub(crate) fn deduplicate_graph_relations(mut relations: Vec<GraphRelation>) -> Vec<GraphRelation> {
-    relations.sort_unstable();
-    relations.dedup();
-    relations
-}
 
 pub(crate) async fn project_note(graph: &Graph, note: &NoteRecord) -> ServerResult<()> {
     graph
@@ -410,89 +330,5 @@ pub(crate) async fn project_link(graph: &Graph, link: &LinkRecord) -> ServerResu
                 ),
         )
         .await?;
-    Ok(())
-}
-
-pub(crate) async fn reproject_transclusion_group(
-    graph: &Graph,
-    pool: &PgPool,
-    group_id: Uuid,
-    merged_group_id: Option<Uuid>,
-) -> ServerResult<()> {
-    if let Some(old_group_id) = merged_group_id {
-        graph
-            .run(
-                query("MATCH ()-[rel:XANADU_LINK {transclusion_id: $group_id}]-() DELETE rel")
-                    .param("group_id", old_group_id.to_string()),
-            )
-            .await?;
-    }
-
-    graph
-        .run(
-            query("MATCH ()-[rel:XANADU_LINK {transclusion_id: $group_id}]-() DELETE rel")
-                .param("group_id", group_id.to_string()),
-        )
-        .await?;
-
-    let notes: Vec<NoteRow> = query_as(&format!(
-        "
-        {NOTE_SELECT}
-        WHERE transclusion_id = $1
-        ORDER BY note_id
-        "
-    ))
-    .bind(group_id)
-    .fetch_all(pool)
-    .await?;
-
-    let tasks: Vec<TaskRow> = query_as(&format!(
-        "
-        {TASK_SELECT}
-        WHERE transclusion_id = $1
-        ORDER BY task_id
-        "
-    ))
-    .bind(group_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut entity_refs = Vec::new();
-
-    for note in notes {
-        let record = NoteRecord::from(note);
-        entity_refs.push(record.entity_ref.clone());
-        project_note(graph, &record).await?;
-    }
-
-    for task in tasks {
-        let record = TaskRecord::from(task);
-        entity_refs.push(record.entity_ref.clone());
-        project_task(graph, &record).await?;
-    }
-
-    entity_refs.sort();
-    for (index, left) in entity_refs.iter().enumerate() {
-        for right in entity_refs
-            .iter()
-            .skip(index.checked_add(1).unwrap_or(entity_refs.len()))
-        {
-            graph
-                .run(
-                    query(
-                        "
-                        MATCH (from:Entity {entity_ref: $from}), (to:Entity {entity_ref: $to})
-                        MERGE (from)-[rel:XANADU_LINK]->(to)
-                        SET rel.transclusion_id = $group_id
-                        ",
-                    )
-                    .param("from", left.clone())
-                    .param("to", right.clone())
-                    .param("group_id", group_id.to_string()),
-                )
-                .await?;
-        }
-    }
-
     Ok(())
 }
