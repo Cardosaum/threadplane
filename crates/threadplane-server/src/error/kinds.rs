@@ -1,12 +1,4 @@
-#![expect(
-    clippy::arbitrary_source_item_ordering,
-    reason = "Error variants are grouped by runtime layer for readability."
-)]
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "Server error types are shared only across crate-local modules."
-)]
-
+use axum::http::StatusCode;
 use core::{
     fmt::Display,
     net::{AddrParseError, SocketAddr},
@@ -14,18 +6,11 @@ use core::{
 };
 use std::io;
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    Json,
-};
-use serde_json::json;
 use snafu::{IntoError as _, Location, Snafu};
 use sqlx::migrate::MigrateError;
-use tracing::error;
 
 pub(crate) type ServerResult<T, E = ThreadplaneServerError> = CoreResult<T, E>;
-pub(crate) type AppResult<T> = ServerResult<Json<threadplane_core::ApiEnvelope<T>>>;
+pub(crate) type AppResult<T> = ServerResult<axum::Json<threadplane_core::ApiEnvelope<T>>>;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)), context(suffix(false)))]
@@ -185,7 +170,7 @@ impl ThreadplaneServerError {
         .build()
     }
 
-    const fn location(&self) -> &Location {
+    pub(crate) const fn location(&self) -> &Location {
         match self {
             Self::LoadConfig { location, .. }
             | Self::InvalidBindAddress { location, .. }
@@ -208,7 +193,7 @@ impl ThreadplaneServerError {
         }
     }
 
-    const fn status_code(&self) -> StatusCode {
+    pub(crate) const fn status_code(&self) -> StatusCode {
         match self {
             Self::BadRequest { .. } => StatusCode::BAD_REQUEST,
             Self::Conflict { .. } => StatusCode::CONFLICT,
@@ -231,7 +216,7 @@ impl ThreadplaneServerError {
         }
     }
 
-    fn response_message(&self) -> String {
+    pub(crate) fn response_message(&self) -> String {
         match self {
             Self::Database { source, .. } => source.to_string(),
             Self::DatabaseMigration { source, .. } => source.to_string(),
@@ -252,20 +237,6 @@ impl ThreadplaneServerError {
             | Self::NotFound { msg, .. }
             | Self::Internal { msg, .. } => msg.clone(),
         }
-    }
-}
-
-impl IntoResponse for ThreadplaneServerError {
-    fn into_response(self) -> Response {
-        error!(error = %self, location = %self.location(), "request failed");
-        (
-            self.status_code(),
-            Json(json!({
-                "ok": false,
-                "error": self.response_message(),
-            })),
-        )
-            .into_response()
     }
 }
 
