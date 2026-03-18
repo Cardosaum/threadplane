@@ -23,6 +23,8 @@ pub(crate) const PERFORMANCE_INDEXES_MIGRATION_SQL: &str =
 #[cfg(test)]
 pub(crate) const WORKSPACE_GOVERNANCE_MIGRATION_SQL: &str =
     include_str!("../migrations/0005_workspace_governance.sql");
+#[cfg(test)]
+pub(crate) const MEMORIES_MIGRATION_SQL: &str = include_str!("../migrations/0006_memories.sql");
 const MIGRATIONS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/migrations");
 
 pub(crate) async fn run_migrations(pool: &PgPool) -> ServerResult<()> {

@@ -15,17 +15,18 @@ use snafu::ResultExt as _;
 use uuid::Uuid;
 
 use threadplane_core::{
-    compare_build_info, normalize_task_labels, normalize_task_owner, AddLinkRequest,
-    AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ActorPublicKey, ApiEnvelope,
+    compare_build_info, normalize_task_labels, normalize_task_owner, ActorPublicKey,
+    AddLinkRequest, AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ApiEnvelope,
     BuildComparison, ClaimNextTaskRequest, ClaimTaskRequest, CliConfigOverrides,
-    CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest, CreateNoteRequest,
-    CreateXanaduLinkRequest, EntityContext, EntityRecord, EventRecord,
-    GrantWorkspaceMembershipRequest, GraphRelation, NoteRecord, OfferTaskRequest,
-    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
-    TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord,
-    ThreadplaneConfig, ThreadplaneConfigOverrides, UpdateNoteRequest, UpdateTaskRequest,
-    UpdateWorkspacePolicyRequest, WorkspaceAuthPolicy, WorkspaceMembership, WorkspacePolicy,
-    WorkspacePriority, WorkspacePriorityPolicy, WorkspaceRole,
+    CompleteTaskRequest, ConfigDiscovery, CreateEpicRequest, CreateMemoryRequest,
+    CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EntityRecord, EventRecord,
+    GrantWorkspaceMembershipRequest, GraphRelation, MemoryAudience, MemoryImportance, MemoryKind,
+    MemoryRecord, MemoryScope, NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
+    ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskDependencySummary, TaskListEntry,
+    TaskMetadata, TaskPriority, TaskRecord, ThreadplaneConfig, ThreadplaneConfigOverrides,
+    UpdateNoteRequest, UpdateTaskRequest, UpdateWorkspacePolicyRequest, WorkspaceAuthPolicy,
+    WorkspaceMembership, WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy,
+    WorkspaceRole,
 };
 
 use crate::{
@@ -85,6 +86,7 @@ enum Command {
     Epic(EpicCommand),
     Events(EventsCommand),
     Link(LinkCommand),
+    Memory(MemoryCommand),
     Note(NoteCommand),
     Projection(ProjectionCommand),
     #[command(about = "Show the product and architecture summary exposed by the service")]
@@ -375,7 +377,11 @@ struct TailEvents {
     )]
     limit: i64,
 
-    #[arg(long, default_value_t = 2, help = "Seconds to wait between follow polls")]
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Seconds to wait between follow polls"
+    )]
     poll_seconds: u64,
 
     #[arg(long, help = "Workspace name")]
@@ -438,6 +444,13 @@ struct NoteCommand {
 }
 
 #[derive(Debug, Args)]
+#[command(about = "Capture and recall durable memories for people and AI agents")]
+struct MemoryCommand {
+    #[command(subcommand)]
+    command: MemorySubcommand,
+}
+
+#[derive(Debug, Args)]
 #[command(about = "Inspect graph projection replay status")]
 struct ProjectionCommand {
     #[command(subcommand)]
@@ -462,6 +475,129 @@ enum NoteSubcommand {
     Show(ShowNote),
     #[command(about = "Update a note and propagate through Xanadu links when present")]
     Update(UpdateNote),
+}
+
+#[derive(Debug, Subcommand)]
+enum MemorySubcommand {
+    #[command(about = "Create a new structured memory in a workspace")]
+    Add(AddMemory),
+    #[command(about = "List memories with structured filters")]
+    List(ListMemories),
+    #[command(about = "Recall the startup memories an agent or human should prime with")]
+    Prime(PrimeMemories),
+    #[command(about = "Fetch a memory by ID")]
+    Show(ShowMemory),
+}
+
+#[derive(Debug, Args)]
+struct AddMemory {
+    #[arg(long, help = "Structured audience: agent, human, or both")]
+    audience: String,
+
+    #[arg(long, help = "Who is recording the memory")]
+    author: String,
+
+    #[arg(long, help = "Memory body")]
+    body: String,
+
+    #[arg(long, help = "Importance: normal, high, or critical")]
+    importance: String,
+
+    #[arg(long, help = "Memory kind, for example workflow, decision, or runbook")]
+    kind: String,
+
+    #[arg(
+        long = "recall-trigger",
+        help = "Recall trigger tag, for example session_start. Repeat for multiple triggers."
+    )]
+    recall_triggers: Vec<String>,
+
+    #[arg(long, help = "Scope: workspace, repo, or global")]
+    scope: String,
+
+    #[arg(long = "tag", help = "Memory tag. Repeat for multiple tags.")]
+    tags: Vec<String>,
+
+    #[arg(long, help = "Memory title")]
+    title: String,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct ListMemories {
+    #[arg(
+        long,
+        help = "Only include memories for this audience: agent, human, or both"
+    )]
+    audience: Option<String>,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(long, help = "Only include memories with this importance")]
+    importance: Option<String>,
+
+    #[arg(long, help = "Only include memories with this kind")]
+    kind: Option<String>,
+
+    #[arg(long, help = "Maximum number of memories to return")]
+    limit: Option<i64>,
+
+    #[arg(long, help = "Search query matched against memory title and body")]
+    query: Option<String>,
+
+    #[arg(
+        long = "recall-trigger",
+        help = "Only include memories with this recall trigger"
+    )]
+    recall_trigger: Option<String>,
+
+    #[arg(long, help = "Only include memories with this tag")]
+    tag: Option<String>,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct PrimeMemories {
+    #[arg(
+        long,
+        default_value = "agent",
+        help = "Recall memories for this audience: agent, human, or both"
+    )]
+    audience: String,
+
+    #[arg(
+        long,
+        default_value = "json",
+        help = "Render JSON or a compact human-readable summary"
+    )]
+    format: OutputFormat,
+
+    #[arg(long, help = "Maximum number of memories to return")]
+    limit: Option<i64>,
+
+    #[arg(long = "recall-trigger", default_value = "session_start")]
+    recall_trigger: String,
+
+    #[arg(long, default_value = "prime")]
+    tag: String,
+
+    #[arg(long, help = "Workspace name")]
+    workspace: String,
+}
+
+#[derive(Debug, Args)]
+struct ShowMemory {
+    #[arg(long, help = "Memory UUID")]
+    memory_id: Uuid,
 }
 
 #[derive(Debug, Args)]
@@ -623,7 +759,10 @@ struct ClaimNextTask {
 
 #[derive(Debug, Args)]
 struct TaskDependencyViewCommand {
-    #[arg(long, help = "Only return direct relationships instead of the transitive chain")]
+    #[arg(
+        long,
+        help = "Only return direct relationships instead of the transitive chain"
+    )]
     direct_only: bool,
 
     #[arg(
@@ -782,7 +921,10 @@ pub(crate) struct TaskMetadataPatchArgs {
     #[arg(long, help = "Clear any durable owner")]
     pub(crate) clear_owner: bool,
 
-    #[arg(long, help = "Replace labels with this set. Repeat for multiple labels")]
+    #[arg(
+        long,
+        help = "Replace labels with this set. Repeat for multiple labels"
+    )]
     pub(crate) label: Vec<String>,
 
     #[arg(long, help = "Replace the durable owner")]
@@ -839,7 +981,10 @@ struct TriageTasks {
     #[arg(long, help = "Actor performing the triage")]
     actor: String,
 
-    #[arg(long, help = "Mark every listed task completed after any metadata updates")]
+    #[arg(
+        long,
+        help = "Mark every listed task completed after any metadata updates"
+    )]
     complete: bool,
 
     #[arg(long, help = "Optional epic UUID to assign to every listed task")]
@@ -909,6 +1054,18 @@ struct TaskTriageOutcome {
     updated: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct MemoryListPathArgs<'input> {
+    pub(crate) audience: Option<&'input str>,
+    pub(crate) importance: Option<&'input str>,
+    pub(crate) kind: Option<&'input str>,
+    pub(crate) limit: Option<i64>,
+    pub(crate) query: Option<&'input str>,
+    pub(crate) recall_trigger: Option<&'input str>,
+    pub(crate) tag: Option<&'input str>,
+    pub(crate) workspace: &'input str,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum TaskDependencyViewKind {
     BlockedBy,
@@ -939,6 +1096,9 @@ pub(crate) fn execute(
         Command::Events(events_command) => handle_events(client, &server, events_command)?,
         Command::Link(link_command) => {
             handle_link(client, &server, idempotency_key, link_command)?;
+        }
+        Command::Memory(memory_command) => {
+            handle_memory(client, &server, idempotency_key, memory_command)?;
         }
         Command::Note(note_command) => {
             handle_note(client, &server, idempotency_key, note_command)?;
@@ -1037,9 +1197,7 @@ fn handle_workspace(
             let request = UpdateWorkspacePolicyRequest {
                 actor: workspace.actor,
                 auth: WorkspaceAuthPolicy {
-                    allowed_algorithms: parse_public_key_algorithms(
-                        &workspace.allowed_algorithms,
-                    )?,
+                    allowed_algorithms: parse_public_key_algorithms(&workspace.allowed_algorithms)?,
                     challenge_ttl_seconds: workspace.challenge_ttl_seconds,
                     signed_commands_required: workspace.signed_commands_required,
                 },
@@ -1059,8 +1217,11 @@ fn handle_workspace(
             print_value(&response)
         }
         WorkspaceSubcommand::MemberList(workspace) => {
-            let response: ApiEnvelope<Vec<WorkspaceMembership>> =
-                get_json(client, server, &workspace_memberships_path(&workspace.workspace))?;
+            let response: ApiEnvelope<Vec<WorkspaceMembership>> = get_json(
+                client,
+                server,
+                &workspace_memberships_path(&workspace.workspace),
+            )?;
             print_value(&response)
         }
         WorkspaceSubcommand::MemberGrant(workspace) => {
@@ -1196,8 +1357,13 @@ fn handle_link(
                 from: link.from,
                 to: link.to,
             };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/links/xanadu", &request, idempotency_key)?;
+            let response: serde_json::Value = post_json(
+                client,
+                server,
+                "/v1/links/xanadu",
+                &request,
+                idempotency_key,
+            )?;
             print_value(&response)
         }
     }
@@ -1241,6 +1407,75 @@ fn handle_note(
                 patch_json(client, server, &path, &request, idempotency_key)?;
             print_value(&response)
         }
+    }
+}
+
+fn handle_memory(
+    client: &Client,
+    server: &str,
+    idempotency_key: Option<&str>,
+    command: MemoryCommand,
+) -> Result<()> {
+    match command.command {
+        MemorySubcommand::Add(add) => {
+            let request = CreateMemoryRequest {
+                workspace: add.workspace,
+                author: add.author,
+                title: add.title,
+                body: add.body,
+                kind: parse_memory_kind_input(&add.kind)?,
+                scope: parse_memory_scope_input(&add.scope)?,
+                audience: parse_memory_audience_input(&add.audience)?,
+                importance: parse_memory_importance_input(&add.importance)?,
+                tags: add.tags,
+                recall_triggers: add.recall_triggers,
+            };
+            let response: serde_json::Value =
+                post_json(client, server, "/v1/memories", &request, idempotency_key)?;
+            print_value(&response)
+        }
+        MemorySubcommand::List(list) => handle_list_memories(client, server, &list),
+        MemorySubcommand::Prime(prime) => handle_prime_memories(client, server, &prime),
+        MemorySubcommand::Show(show) => {
+            let path = memory_path(show.memory_id);
+            let response: serde_json::Value = get_json(client, server, &path)?;
+            print_value(&response)
+        }
+    }
+}
+
+fn handle_list_memories(client: &Client, server: &str, memory: &ListMemories) -> Result<()> {
+    let path = memory_list_path(MemoryListPathArgs {
+        audience: memory.audience.as_deref(),
+        importance: memory.importance.as_deref(),
+        kind: memory.kind.as_deref(),
+        limit: memory.limit,
+        query: memory.query.as_deref(),
+        recall_trigger: memory.recall_trigger.as_deref(),
+        tag: memory.tag.as_deref(),
+        workspace: memory.workspace.as_str(),
+    })?;
+    let response: ApiEnvelope<Vec<MemoryRecord>> = get_json(client, server, &path)?;
+
+    match memory.format {
+        OutputFormat::Compact => {
+            print!("{}", render_memory_list_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
+    }
+}
+
+fn handle_prime_memories(client: &Client, server: &str, memory: &PrimeMemories) -> Result<()> {
+    let path = memory_prime_path(memory)?;
+    let response: ApiEnvelope<Vec<MemoryRecord>> = get_json(client, server, &path)?;
+
+    match memory.format {
+        OutputFormat::Compact => {
+            print!("{}", render_memory_list_compact(&response.data));
+            Ok(())
+        }
+        OutputFormat::Json => print_value(&response),
     }
 }
 
@@ -1297,12 +1532,9 @@ fn handle_task(
     command: TaskCommand,
 ) -> Result<()> {
     match command.command {
-        TaskSubcommand::BlockedBy(task) => handle_task_dependency_view(
-            client,
-            server,
-            &task,
-            TaskDependencyViewKind::BlockedBy,
-        ),
+        TaskSubcommand::BlockedBy(task) => {
+            handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::BlockedBy)
+        }
         TaskSubcommand::Blocks(task) => {
             handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::Blocks)
         }
@@ -1321,9 +1553,7 @@ fn handle_task(
         TaskSubcommand::List(task) => handle_list_tasks(client, server, &task),
         TaskSubcommand::Next(task) => handle_next_task(client, server, &task),
         TaskSubcommand::Offer(task) => handle_offer_task(client, server, idempotency_key, task),
-        TaskSubcommand::Release(task) => {
-            handle_release_task(client, server, idempotency_key, task)
-        }
+        TaskSubcommand::Release(task) => handle_release_task(client, server, idempotency_key, task),
         TaskSubcommand::Show(task) => handle_show_task(client, server, &task),
         TaskSubcommand::Triage(task) => {
             let response = triage_tasks(client, server, idempotency_key, &task)?;
@@ -1394,8 +1624,13 @@ fn handle_claim_next_task(
             .transpose()?,
         workspace: task.workspace,
     };
-    let response: ApiEnvelope<Option<TaskClaimRecord>> =
-        post_json(client, server, "/v1/tasks/claims/next", &request, idempotency_key)?;
+    let response: ApiEnvelope<Option<TaskClaimRecord>> = post_json(
+        client,
+        server,
+        "/v1/tasks/claims/next",
+        &request,
+        idempotency_key,
+    )?;
     print_value(&response)
 }
 
@@ -1434,9 +1669,10 @@ fn handle_next_task(client: &Client, server: &str, task: &NextTask) -> Result<()
 
     match task.format {
         OutputFormat::Compact => {
-            let rendered = response
-                .data
-                .map_or_else(|| "no tasks\n".to_owned(), |entry| render_task_list_compact(&[entry]));
+            let rendered = response.data.map_or_else(
+                || "no tasks\n".to_owned(),
+                |entry| render_task_list_compact(&[entry]),
+            );
             print!("{rendered}");
             Ok(())
         }
@@ -1596,17 +1832,17 @@ pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<Str
 }
 
 fn compact_claim_label(entry: &TaskListEntry) -> String {
-    entry
-        .active_claim
-        .as_ref()
-        .map_or_else(|| "claim=open".to_owned(), |claim| format!("claim={}", claim.actor))
+    entry.active_claim.as_ref().map_or_else(
+        || "claim=open".to_owned(),
+        |claim| format!("claim={}", claim.actor),
+    )
 }
 
 fn compact_epic_label(entry: &TaskListEntry) -> String {
-    entry
-        .epic
-        .as_ref()
-        .map_or_else(|| "epic=none".to_owned(), |epic| format!("epic={}", epic.title))
+    entry.epic.as_ref().map_or_else(
+        || "epic=none".to_owned(),
+        |epic| format!("epic={}", epic.title),
+    )
 }
 
 fn compact_owner_label(entry: &TaskListEntry) -> String {
@@ -1719,6 +1955,29 @@ pub(crate) fn render_note_list_compact(entries: &[NoteRecord]) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+pub(crate) fn render_memory_list_compact(entries: &[MemoryRecord]) -> String {
+    if entries.is_empty() {
+        return "no memories\n".to_owned();
+    }
+
+    let lines = entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{} | {} | kind={} | importance={} | audience={} | tags={}",
+                short_uuid(&entry.memory_id),
+                entry.title,
+                entry.kind,
+                entry.importance,
+                entry.audience,
+                entry.tags.join(",")
+            )
+        })
+        .collect::<Vec<_>>();
+
+    format!("{}\n", lines.join("\n"))
+}
+
 pub(crate) fn render_event_list_compact(entries: &[EventRecord]) -> String {
     if entries.is_empty() {
         return "no events\n".to_owned();
@@ -1776,6 +2035,14 @@ fn compact_entity_summary(entity: &EntityRecord) -> String {
             short_uuid(&record.epic_id),
             record.title,
             record.author,
+            record.workspace
+        ),
+        EntityRecord::Memory(record) => format!(
+            "memory {} | {} | kind={} | importance={} | workspace={}",
+            short_uuid(&record.memory_id),
+            record.title,
+            record.kind,
+            record.importance,
             record.workspace
         ),
         EntityRecord::Note(record) => format!(
@@ -1843,7 +2110,14 @@ fn task_next_path(task: &NextTask) -> Result<String> {
         true,
     )?;
 
-    Ok(format!("/v1/workspaces/{}/tasks/next{}", task.workspace, suffix))
+    Ok(format!(
+        "/v1/workspaces/{}/tasks/next{}",
+        task.workspace, suffix
+    ))
+}
+
+fn memory_path(memory_id: Uuid) -> String {
+    format!("/v1/memories/{memory_id}")
 }
 
 fn note_path(note_id: Uuid) -> String {
@@ -1897,9 +2171,10 @@ fn task_query_suffix(
     if let Some(query_limit) = limit {
         query.push(format!("limit={query_limit}"));
     }
-    if let Some(selected_label) = normalize_task_labels(label.map(str::to_owned).into_iter().collect())
-        .into_iter()
-        .next()
+    if let Some(selected_label) =
+        normalize_task_labels(label.map(str::to_owned).into_iter().collect())
+            .into_iter()
+            .next()
     {
         query.push(format!("label={selected_label}"));
     }
@@ -1907,7 +2182,10 @@ fn task_query_suffix(
         query.push(format!("owner={selected_owner}"));
     }
     if let Some(selected_priority) = priority {
-        query.push(format!("priority={}", parse_task_priority_input(selected_priority)?));
+        query.push(format!(
+            "priority={}",
+            parse_task_priority_input(selected_priority)?
+        ));
     }
     if ready_only {
         query.push("ready_only=true".to_owned());
@@ -1946,6 +2224,81 @@ pub(crate) fn note_list_path(
     format!("/v1/workspaces/{workspace}/notes{suffix}")
 }
 
+pub(crate) fn memory_list_path(input: MemoryListPathArgs<'_>) -> Result<String> {
+    let mut params = Vec::new();
+    if let Some(query_limit) = input.limit {
+        params.push(format!("limit={query_limit}"));
+    }
+    if let Some(selected_audience) = input.audience {
+        params.push(format!(
+            "audience={}",
+            parse_memory_audience_input(selected_audience)?
+        ));
+    }
+    if let Some(selected_importance) = input.importance {
+        params.push(format!(
+            "importance={}",
+            parse_memory_importance_input(selected_importance)?
+        ));
+    }
+    if let Some(selected_kind) = input.kind {
+        params.push(format!("kind={}", parse_memory_kind_input(selected_kind)?));
+    }
+    if let Some(search_query) = input.query.map(str::trim).filter(|value| !value.is_empty()) {
+        params.push(format!("query={search_query}"));
+    }
+    if let Some(selected_trigger) = input
+        .recall_trigger
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params.push(format!(
+            "recall_trigger={}",
+            normalize_memory_filter_name(selected_trigger)?
+        ));
+    }
+    if let Some(selected_tag) = input.tag.map(str::trim).filter(|value| !value.is_empty()) {
+        params.push(format!(
+            "tag={}",
+            normalize_memory_filter_name(selected_tag)?
+        ));
+    }
+
+    let suffix = if params.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", params.join("&"))
+    };
+
+    Ok(format!(
+        "/v1/workspaces/{}/memories{suffix}",
+        input.workspace
+    ))
+}
+
+fn memory_prime_path(memory: &PrimeMemories) -> Result<String> {
+    let mut params = vec![
+        format!(
+            "audience={}",
+            parse_memory_audience_input(&memory.audience)?
+        ),
+        format!(
+            "recall_trigger={}",
+            normalize_memory_filter_name(&memory.recall_trigger)?
+        ),
+        format!("tag={}", normalize_memory_filter_name(&memory.tag)?),
+    ];
+    if let Some(query_limit) = memory.limit {
+        params.push(format!("limit={query_limit}"));
+    }
+
+    Ok(format!(
+        "/v1/workspaces/{}/memories/prime?{}",
+        memory.workspace,
+        params.join("&")
+    ))
+}
+
 pub(crate) fn entity_show_path(entity_ref: &str) -> String {
     format!("/v1/entities/{entity_ref}")
 }
@@ -1958,13 +2311,20 @@ pub(crate) fn events_list_path(workspace: &str, limit: i64) -> String {
     format!("/v1/workspaces/{workspace}/events?limit={limit}")
 }
 
-pub(crate) fn events_tail_path(workspace: &str, limit: i64, after_event_id: Option<Uuid>) -> String {
+pub(crate) fn events_tail_path(
+    workspace: &str,
+    limit: i64,
+    after_event_id: Option<Uuid>,
+) -> String {
     let mut params = vec![format!("limit={limit}")];
     if let Some(event_id) = after_event_id {
         params.push(format!("after_event_id={event_id}"));
     }
 
-    format!("/v1/workspaces/{workspace}/events/tail?{}", params.join("&"))
+    format!(
+        "/v1/workspaces/{workspace}/events/tail?{}",
+        params.join("&")
+    )
 }
 
 fn workspace_policy_path(workspace: &str) -> String {
@@ -2004,6 +2364,54 @@ fn parse_task_priority_input(input: &str) -> Result<TaskPriority> {
 
 fn normalize_priority_name(input: &str) -> Result<String> {
     Ok(parse_task_priority_input(input)?.to_string())
+}
+
+fn parse_memory_kind_input(input: &str) -> Result<MemoryKind> {
+    MemoryKind::new(input).ok_or_else(|| {
+        Usage {
+            message: "memory kind cannot be empty".to_owned(),
+        }
+        .build()
+    })
+}
+
+fn parse_memory_audience_input(input: &str) -> Result<MemoryAudience> {
+    input.parse().map_err(|_error| {
+        Usage {
+            message: format!("unsupported memory audience `{input}`"),
+        }
+        .build()
+    })
+}
+
+fn parse_memory_importance_input(input: &str) -> Result<MemoryImportance> {
+    input.parse().map_err(|_error| {
+        Usage {
+            message: format!("unsupported memory importance `{input}`"),
+        }
+        .build()
+    })
+}
+
+fn parse_memory_scope_input(input: &str) -> Result<MemoryScope> {
+    input.parse().map_err(|_error| {
+        Usage {
+            message: format!("unsupported memory scope `{input}`"),
+        }
+        .build()
+    })
+}
+
+fn normalize_memory_filter_name(input: &str) -> Result<String> {
+    let normalized = threadplane_core::normalize_memory_kind_name(input);
+    if normalized.is_empty() {
+        return Err(Usage {
+            message: "memory filters cannot be empty".to_owned(),
+        }
+        .build());
+    }
+
+    Ok(normalized)
 }
 
 fn parse_public_key_algorithm(input: &str) -> Result<threadplane_core::PublicKeyAlgorithm> {
@@ -2256,10 +2664,12 @@ fn task_metadata_from_args(
         .map(parse_task_priority_input)
         .transpose()?
         .or_else(|| workspace_policy.priorities.default_task_priority())
-        .ok_or_else(|| Usage {
-            message: "workspace policy does not define a usable default priority".to_owned(),
-        }
-        .build())?;
+        .ok_or_else(|| {
+            Usage {
+                message: "workspace policy does not define a usable default priority".to_owned(),
+            }
+            .build()
+        })?;
 
     Ok(TaskMetadata {
         labels: normalize_task_labels(metadata.label),
@@ -2268,7 +2678,10 @@ fn task_metadata_from_args(
     })
 }
 
-fn apply_metadata_patch(current: &TaskMetadata, patch: &TaskMetadataPatchArgs) -> Result<TaskMetadata> {
+fn apply_metadata_patch(
+    current: &TaskMetadata,
+    patch: &TaskMetadataPatchArgs,
+) -> Result<TaskMetadata> {
     let labels = if patch.clear_labels {
         Vec::new()
     } else if patch.label.is_empty() {

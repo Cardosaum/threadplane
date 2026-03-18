@@ -20,12 +20,14 @@ use crate::{
     error::{ServerResult, ThreadplaneServerError},
 };
 use threadplane_core::{
-    epic_entity_ref, normalize_task_labels, normalize_task_owner, note_entity_ref,
-    parse_entity_ref, task_entity_ref, validate_workspace_policy, ActorPublicKey, EntityRef,
-    EntityRecord, EpicRecord, EventKind, EventRecord, NoteRecord, ProjectionStatus,
-    PublicKeyAlgorithm, TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata,
-    TaskPriority, TaskRecord, TaskSummary, WorkspaceAuthPolicy, WorkspaceMembership, WorkspacePolicy,
-    WorkspacePriority, WorkspacePriorityPolicy, WorkspaceRole, DEPENDS_ON_RELATION,
+    epic_entity_ref, memory_entity_ref, normalize_memory_recall_triggers, normalize_memory_tags,
+    normalize_task_labels, normalize_task_owner, note_entity_ref, parse_entity_ref,
+    task_entity_ref, validate_workspace_policy, ActorPublicKey, EntityRecord, EntityRef,
+    EpicRecord, EventKind, EventRecord, MemoryAudience, MemoryImportance, MemoryKind, MemoryRecord,
+    MemoryScope, NoteRecord, ProjectionStatus, PublicKeyAlgorithm, TaskClaimRecord,
+    TaskDependencySummary, TaskListEntry, TaskMetadata, TaskPriority, TaskRecord, TaskSummary,
+    WorkspaceAuthPolicy, WorkspaceMembership, WorkspacePolicy, WorkspacePriority,
+    WorkspacePriorityPolicy, WorkspaceRole, DEPENDS_ON_RELATION,
 };
 
 pub(crate) const NOTE_SELECT: &str = "
@@ -40,6 +42,25 @@ pub(crate) const NOTE_SELECT: &str = "
         created_at,
         COALESCE(updated_at, created_at) AS updated_at
     FROM notes
+";
+
+pub(crate) const MEMORY_SELECT: &str = "
+    SELECT
+        memory_id,
+        event_id,
+        workspace,
+        author,
+        title,
+        body,
+        kind,
+        scope,
+        audience,
+        importance,
+        tags,
+        recall_triggers,
+        created_at,
+        COALESCE(updated_at, created_at) AS updated_at
+    FROM memories
 ";
 
 pub(crate) const EPIC_SELECT: &str = "
@@ -139,6 +160,24 @@ pub(crate) async fn ensure_workspace_governance(
     bootstrap: &WorkspaceGovernanceBootstrap,
 ) -> ServerResult<WorkspacePolicy> {
     let mut tx = pool.begin().await?;
+    let policy = bootstrap.policy_for_workspace(workspace);
+    insert_workspace_policy_if_missing(&mut tx, &policy).await?;
+    insert_workspace_priorities_if_missing(&mut tx, workspace, &policy.priorities).await?;
+    insert_workspace_memberships_if_missing(
+        &mut tx,
+        &bootstrap.memberships_for_workspace(workspace),
+    )
+    .await?;
+    insert_actor_public_keys_if_missing(&mut tx, workspace, &bootstrap.public_keys()).await?;
+    tx.commit().await?;
+
+    fetch_workspace_policy(pool, workspace).await
+}
+
+async fn insert_workspace_policy_if_missing(
+    tx: &mut Transaction<'_, Postgres>,
+    policy: &WorkspacePolicy,
+) -> ServerResult<()> {
     sqlx::query(
         "
         INSERT INTO workspace_policies (
@@ -152,35 +191,34 @@ pub(crate) async fn ensure_workspace_governance(
         ON CONFLICT (workspace) DO NOTHING
         ",
     )
-    .bind(workspace)
-    .bind(bootstrap.policy_for_workspace(workspace).priorities.default_priority)
-        .bind(
-            bootstrap
-                .policy_for_workspace(workspace)
-                .auth
-                .allowed_algorithms
-                .iter()
-                .copied()
-                .map(serialize_public_key_algorithm)
-                .collect::<Vec<_>>(),
-        )
-    .bind(i32::try_from(
-        bootstrap
-            .policy_for_workspace(workspace)
-            .auth
-            .challenge_ttl_seconds,
-    )
-    .map_err(ThreadplaneServerError::internal)?)
+    .bind(&policy.workspace)
+    .bind(policy.priorities.default_priority.clone())
     .bind(
-        bootstrap
-            .policy_for_workspace(workspace)
+        policy
             .auth
-            .signed_commands_required,
+            .allowed_algorithms
+            .iter()
+            .copied()
+            .map(serialize_public_key_algorithm)
+            .collect::<Vec<_>>(),
     )
-    .execute(&mut *tx)
+    .bind(
+        i32::try_from(policy.auth.challenge_ttl_seconds)
+            .map_err(ThreadplaneServerError::internal)?,
+    )
+    .bind(policy.auth.signed_commands_required)
+    .execute(&mut **tx)
     .await?;
 
-    for priority in &bootstrap.policy_for_workspace(workspace).priorities.priorities {
+    Ok(())
+}
+
+async fn insert_workspace_priorities_if_missing(
+    tx: &mut Transaction<'_, Postgres>,
+    workspace: &str,
+    priorities: &WorkspacePriorityPolicy,
+) -> ServerResult<()> {
+    for priority in &priorities.priorities {
         sqlx::query(
             "
             INSERT INTO workspace_priorities (workspace, name, rank, description)
@@ -192,11 +230,18 @@ pub(crate) async fn ensure_workspace_governance(
         .bind(normalize_priority_name(&priority.name))
         .bind(i32::from(priority.rank))
         .bind(priority.description.clone())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
 
-    for membership in bootstrap.memberships_for_workspace(workspace) {
+    Ok(())
+}
+
+async fn insert_workspace_memberships_if_missing(
+    tx: &mut Transaction<'_, Postgres>,
+    memberships: &[WorkspaceMembership],
+) -> ServerResult<()> {
+    for membership in memberships {
         sqlx::query(
             "
             INSERT INTO workspace_memberships (workspace, actor_id, role)
@@ -204,14 +249,22 @@ pub(crate) async fn ensure_workspace_governance(
             ON CONFLICT (workspace, actor_id) DO NOTHING
             ",
         )
-        .bind(workspace)
-        .bind(membership.actor_id)
+        .bind(&membership.workspace)
+        .bind(&membership.actor_id)
         .bind(membership.role.to_string())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
 
-    for key in bootstrap.public_keys() {
+    Ok(())
+}
+
+async fn insert_actor_public_keys_if_missing(
+    tx: &mut Transaction<'_, Postgres>,
+    workspace: &str,
+    public_keys: &[ActorPublicKey],
+) -> ServerResult<()> {
+    for key in public_keys {
         sqlx::query(
             "
             INSERT INTO actor_public_keys (workspace, actor_id, key_id, algorithm, public_key)
@@ -220,16 +273,15 @@ pub(crate) async fn ensure_workspace_governance(
             ",
         )
         .bind(workspace)
-        .bind(key.actor_id)
-        .bind(key.key_id)
+        .bind(&key.actor_id)
+        .bind(&key.key_id)
         .bind(key.algorithm.to_string())
-        .bind(key.public_key)
-        .execute(&mut *tx)
+        .bind(&key.public_key)
+        .execute(&mut **tx)
         .await?;
     }
-    tx.commit().await?;
 
-    fetch_workspace_policy(pool, workspace).await
+    Ok(())
 }
 
 pub(crate) async fn fetch_workspace_policy(
@@ -316,16 +368,19 @@ pub(crate) async fn upsert_workspace_policy(
     )
     .bind(&policy.workspace)
     .bind(normalize_priority_name(&policy.priorities.default_priority))
-        .bind(
-            policy
-                .auth
-                .allowed_algorithms
-                .iter()
-                .copied()
-                .map(serialize_public_key_algorithm)
-                .collect::<Vec<_>>(),
-        )
-    .bind(i32::try_from(policy.auth.challenge_ttl_seconds).map_err(ThreadplaneServerError::internal)?)
+    .bind(
+        policy
+            .auth
+            .allowed_algorithms
+            .iter()
+            .copied()
+            .map(serialize_public_key_algorithm)
+            .collect::<Vec<_>>(),
+    )
+    .bind(
+        i32::try_from(policy.auth.challenge_ttl_seconds)
+            .map_err(ThreadplaneServerError::internal)?,
+    )
     .bind(policy.auth.signed_commands_required)
     .execute(&mut *tx)
     .await?;
@@ -491,9 +546,11 @@ pub(crate) async fn require_workspace_role(
 ) -> ServerResult<WorkspaceRole> {
     let role = fetch_workspace_role(pool, workspace, actor_id)
         .await?
-        .ok_or_else(|| ThreadplaneServerError::forbidden(format!(
-            "actor {actor_id} is not a member of workspace {workspace}"
-        )))?;
+        .ok_or_else(|| {
+            ThreadplaneServerError::forbidden(format!(
+                "actor {actor_id} is not a member of workspace {workspace}"
+            ))
+        })?;
 
     if !predicate(role) {
         return Err(ThreadplaneServerError::forbidden(format!(
@@ -531,7 +588,10 @@ fn normalize_priority_name(value: &str) -> String {
 }
 
 fn parse_public_key_algorithms(values: &[String]) -> ServerResult<Vec<PublicKeyAlgorithm>> {
-    values.iter().map(|value| parse_public_key_algorithm(value)).collect()
+    values
+        .iter()
+        .map(|value| parse_public_key_algorithm(value))
+        .collect()
 }
 
 fn parse_public_key_algorithm(value: &str) -> ServerResult<PublicKeyAlgorithm> {
@@ -906,8 +966,115 @@ pub(crate) async fn fetch_note_by_id(pool: &PgPool, note_id: Uuid) -> ServerResu
     query_as(&format!("{NOTE_SELECT} WHERE note_id = $1"))
         .bind(note_id)
         .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ThreadplaneServerError::not_found("note not found"))
+}
+
+pub(crate) async fn fetch_memory_by_id(pool: &PgPool, memory_id: Uuid) -> ServerResult<MemoryRow> {
+    query_as(&format!("{MEMORY_SELECT} WHERE memory_id = $1"))
+        .bind(memory_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| ThreadplaneServerError::not_found("memory not found"))
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MemoryListFilters<'filter> {
+    pub(crate) audience: Option<MemoryAudience>,
+    pub(crate) importance: Option<MemoryImportance>,
+    pub(crate) kind: Option<&'filter MemoryKind>,
+    pub(crate) query: Option<&'filter str>,
+    pub(crate) recall_trigger: Option<&'filter str>,
+    pub(crate) tag: Option<&'filter str>,
+}
+
+pub(crate) async fn fetch_memories_for_listing(
+    pool: &PgPool,
+    workspace: &str,
+    filters: MemoryListFilters<'_>,
+    limit: i64,
+) -> ServerResult<Vec<MemoryRow>> {
+    let normalized_query = normalized_text_query(filters.query);
+    let normalized_tag = normalized_memory_tag_filter(filters.tag);
+    let normalized_recall_trigger = normalized_memory_recall_trigger_filter(filters.recall_trigger);
+    let mut query = QueryBuilder::<Postgres>::new(MEMORY_SELECT);
+    query.push(" WHERE workspace = ");
+    query.push_bind(workspace);
+
+    if let Some(kind) = filters.kind {
+        query.push(" AND kind = ");
+        query.push_bind(kind.as_str());
+    }
+    if let Some(audience) = filters.audience {
+        query.push(" AND audience IN (");
+        query.push_bind(audience.to_string());
+        query.push(", ");
+        query.push_bind(MemoryAudience::Both.to_string());
+        query.push(")");
+    }
+    if let Some(importance) = filters.importance {
+        query.push(" AND importance = ");
+        query.push_bind(importance.to_string());
+    }
+    if let Some(tag) = normalized_tag {
+        query.push(" AND tags @> ");
+        query.push_bind(vec![tag]);
+        query.push("::text[]");
+    }
+    if let Some(recall_trigger) = normalized_recall_trigger {
+        query.push(" AND recall_triggers @> ");
+        query.push_bind(vec![recall_trigger]);
+        query.push("::text[]");
+    }
+    if let Some(search_query) = normalized_query {
+        query.push(" AND (title ILIKE ");
+        query.push_bind(format!("%{search_query}%"));
+        query.push(" OR body ILIKE ");
+        query.push_bind(format!("%{search_query}%"));
+        query.push(")");
+    }
+
+    query.push(
+        " ORDER BY CASE importance \
+            WHEN 'critical' THEN 30 \
+            WHEN 'high' THEN 20 \
+            ELSE 10 \
+          END DESC, updated_at DESC, created_at DESC",
+    );
+    query.push(" LIMIT ");
+    query.push_bind(limit);
+
+    query
+        .build_query_as::<MemoryRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_memory_by_event_id(
+    pool: &PgPool,
+    event_id: Uuid,
+) -> ServerResult<Option<MemoryRow>> {
+    query_as(&format!("{MEMORY_SELECT} WHERE event_id = $1"))
+        .bind(event_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn fetch_memory_by_id_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: Uuid,
+    workspace: &str,
+) -> ServerResult<MemoryRow> {
+    query_as(&format!(
+        "{MEMORY_SELECT} WHERE memory_id = $1 AND workspace = $2"
+    ))
+    .bind(memory_id)
+    .bind(workspace)
+    .fetch_optional(&mut **tx)
     .await?
-    .ok_or_else(|| ThreadplaneServerError::not_found("note not found"))
+    .ok_or_else(|| ThreadplaneServerError::not_found("memory not found"))
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -923,7 +1090,7 @@ pub(crate) async fn fetch_notes_for_listing(
     limit: i64,
 ) -> ServerResult<Vec<NoteRow>> {
     let normalized_author = normalize_task_owner(filters.author.map(str::to_owned));
-    let normalized_query = normalized_note_query(filters.query);
+    let normalized_query = normalized_text_query(filters.query);
     let mut query = QueryBuilder::<Postgres>::new(NOTE_SELECT);
     query.push(" WHERE workspace = ");
     query.push_bind(workspace);
@@ -944,7 +1111,11 @@ pub(crate) async fn fetch_notes_for_listing(
     query.push(" LIMIT ");
     query.push_bind(limit);
 
-    query.build_query_as::<NoteRow>().fetch_all(pool).await.map_err(Into::into)
+    query
+        .build_query_as::<NoteRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
 }
 
 pub(crate) async fn fetch_note_by_event_id(
@@ -981,11 +1152,18 @@ pub(crate) async fn fetch_task_by_id(pool: &PgPool, task_id: Uuid) -> ServerResu
         .ok_or_else(|| ThreadplaneServerError::not_found("task not found"))
 }
 
-pub(crate) async fn fetch_entity_record(pool: &PgPool, entity_ref: &str) -> ServerResult<EntityRecord> {
+pub(crate) async fn fetch_entity_record(
+    pool: &PgPool,
+    entity_ref: &str,
+) -> ServerResult<EntityRecord> {
     match parse_entity_ref(entity_ref) {
         Some(EntityRef::Epic(epic_id)) => {
             let epic = fetch_epic_by_id(pool, epic_id).await?;
             Ok(EntityRecord::Epic(EpicRecord::from(epic)))
+        }
+        Some(EntityRef::Memory(memory_id)) => {
+            let memory = fetch_memory_by_id(pool, memory_id).await?;
+            Ok(EntityRecord::Memory(MemoryRecord::try_from(memory)?))
         }
         Some(EntityRef::Note(note_id)) => {
             let note = fetch_note_by_id(pool, note_id).await?;
@@ -1001,11 +1179,23 @@ pub(crate) async fn fetch_entity_record(pool: &PgPool, entity_ref: &str) -> Serv
     }
 }
 
-fn normalized_note_query(value: Option<&str>) -> Option<String> {
+fn normalized_text_query(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|candidate| !candidate.is_empty())
         .map(str::to_owned)
+}
+
+fn normalized_memory_tag_filter(value: Option<&str>) -> Option<String> {
+    normalize_memory_tags(value.map(str::to_owned).into_iter().collect())
+        .into_iter()
+        .next()
+}
+
+fn normalized_memory_recall_trigger_filter(value: Option<&str>) -> Option<String> {
+    normalize_memory_recall_triggers(value.map(str::to_owned).into_iter().collect())
+        .into_iter()
+        .next()
 }
 
 pub(crate) async fn fetch_task_by_event_id(
@@ -1701,9 +1891,11 @@ pub(crate) async fn fetch_text_entity_by_ref_tx(
     entity_ref: &str,
 ) -> ServerResult<TextEntityRow> {
     match parse_entity_ref(entity_ref) {
-        Some(EntityRef::Epic(_)) => Err(ThreadplaneServerError::bad_request(format!(
-            "epic refs are not textual entities: {entity_ref}"
-        ))),
+        Some(EntityRef::Epic(_) | EntityRef::Memory(_)) => {
+            Err(ThreadplaneServerError::bad_request(format!(
+                "non-textual entity refs cannot join xanadu groups: {entity_ref}"
+            )))
+        }
         Some(EntityRef::Note(note_id)) => Ok(TextEntityRow::Note(
             fetch_note_by_id_tx(tx, note_id, workspace).await?,
         )),
@@ -1927,6 +2119,24 @@ pub(crate) struct EpicRow {
 }
 
 #[derive(Debug, FromRow, Clone)]
+pub(crate) struct MemoryRow {
+    pub(crate) memory_id: Uuid,
+    event_id: Uuid,
+    workspace: String,
+    author: String,
+    title: String,
+    body: String,
+    kind: String,
+    scope: String,
+    audience: String,
+    importance: String,
+    tags: Vec<String>,
+    recall_triggers: Vec<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, FromRow, Clone)]
 pub(crate) struct NoteRow {
     pub(crate) note_id: Uuid,
     event_id: Uuid,
@@ -2127,6 +2337,31 @@ impl From<EpicRow> for EpicRecord {
     }
 }
 
+impl TryFrom<MemoryRow> for MemoryRecord {
+    type Error = ThreadplaneServerError;
+
+    #[inline]
+    fn try_from(value: MemoryRow) -> ServerResult<Self> {
+        Ok(Self {
+            memory_id: value.memory_id,
+            entity_ref: memory_entity_ref(value.memory_id),
+            event_id: value.event_id,
+            workspace: value.workspace,
+            author: value.author,
+            title: value.title,
+            body: value.body,
+            kind: parse_memory_kind(&value.kind),
+            scope: parse_memory_scope(&value.scope)?,
+            audience: parse_memory_audience(&value.audience)?,
+            importance: parse_memory_importance(&value.importance)?,
+            tags: normalize_memory_tags(value.tags),
+            recall_triggers: normalize_memory_recall_triggers(value.recall_triggers),
+            created_at: value.created_at.to_rfc3339(),
+            updated_at: value.updated_at.to_rfc3339(),
+        })
+    }
+}
+
 impl From<NoteRow> for threadplane_core::NoteRecord {
     #[inline]
     fn from(value: NoteRow) -> Self {
@@ -2198,6 +2433,25 @@ fn task_metadata_from_row(value: &TaskRow) -> TaskMetadata {
 
 fn parse_task_priority(value: &str) -> TaskPriority {
     TaskPriority::from_lossy(value)
+}
+
+fn parse_memory_kind(value: &str) -> MemoryKind {
+    MemoryKind::from_lossy(value)
+}
+
+fn parse_memory_scope(value: &str) -> ServerResult<MemoryScope> {
+    MemoryScope::from_str(value)
+        .map_err(|error| ThreadplaneServerError::internal(error.to_string()))
+}
+
+fn parse_memory_audience(value: &str) -> ServerResult<MemoryAudience> {
+    MemoryAudience::from_str(value)
+        .map_err(|error| ThreadplaneServerError::internal(error.to_string()))
+}
+
+fn parse_memory_importance(value: &str) -> ServerResult<MemoryImportance> {
+    MemoryImportance::from_str(value)
+        .map_err(|error| ThreadplaneServerError::internal(error.to_string()))
 }
 
 impl From<ClaimRow> for TaskClaimRecord {

@@ -19,15 +19,15 @@ use crate::{
     app::AppState,
     error::{ServerResult, ThreadplaneServerError},
     projections::{
-        project_claim, project_epic, project_link, project_note, project_task,
+        project_claim, project_epic, project_link, project_memory, project_note, project_task,
         project_task_dependency_by_id, project_task_supporting_entities,
         reproject_transclusion_group,
     },
     storage::{
         fetch_claim_by_event_id, fetch_epic_by_event_id, fetch_event_rows_after_cursor,
-        fetch_link_by_event_id, fetch_note_by_event_id, fetch_note_by_id, fetch_projection_cursor,
-        fetch_task_by_event_id, fetch_task_by_id, fetch_task_dependency_by_event_id,
-        record_projection_cursor, EventRow, ProjectionCursor,
+        fetch_link_by_event_id, fetch_memory_by_event_id, fetch_note_by_event_id, fetch_note_by_id,
+        fetch_projection_cursor, fetch_task_by_event_id, fetch_task_by_id,
+        fetch_task_dependency_by_event_id, record_projection_cursor, EventRow, ProjectionCursor,
     },
 };
 use threadplane_core::{
@@ -209,6 +209,7 @@ async fn project_event(state: &AppState, event: &EventRow) -> ServerResult<()> {
                 Ok(())
             }
             EventKind::LinkDeclared => project_link_declared(state, event).await,
+            EventKind::MemoryRecorded => project_memory_recorded(state, event).await,
             EventKind::NoteRecorded => project_note_recorded(state, event).await,
             EventKind::NoteUpdated => project_note_updated(state, event).await,
             EventKind::TaskClaimed => project_task_claimed(state, event).await,
@@ -241,6 +242,15 @@ async fn project_note_recorded(state: &AppState, event: &EventRow) -> ServerResu
     };
 
     project_note(state.graph(), &row.into()).await
+}
+
+async fn project_memory_recorded(state: &AppState, event: &EventRow) -> ServerResult<()> {
+    let Some(row) = fetch_memory_by_event_id(state.pool(), event.event_id).await? else {
+        warn!(event_id = %event.event_id, "skipping memory replay without matching row");
+        return Ok(());
+    };
+
+    project_memory(state.graph(), &row.try_into()?).await
 }
 
 async fn project_note_updated(state: &AppState, event: &EventRow) -> ServerResult<()> {

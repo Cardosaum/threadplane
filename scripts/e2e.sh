@@ -346,6 +346,72 @@ replayed_idempotent_note_json="$(
 [[ "$(jq -r '.receipt.replayed' <<<"$replayed_idempotent_note_json")" == "true" ]]
 [[ "$(jq -r '.receipt.idempotency_key' <<<"$replayed_idempotent_note_json")" == "note-seed-${WORKSPACE}" ]]
 
+memory_json="$(
+    cargo run -q -p threadplane-cli -- \
+        memory add \
+        --workspace "$WORKSPACE" \
+        --author agent-c \
+        --title "Core engineering memory" \
+        --body "Prefer clean bottom-up abstractions and prime new sessions with durable context." \
+        --kind workflow \
+        --scope workspace \
+        --audience both \
+        --importance critical \
+        --tag prime \
+        --tag core \
+        --recall-trigger session_start \
+        --recall-trigger before_codegen
+)"
+memory_id="$(jq -r '.data.memory_id' <<<"$memory_json")"
+memory_ref="$(jq -r '.data.entity_ref' <<<"$memory_json")"
+
+memory_list_json="$(
+    cargo run -q -p threadplane-cli -- \
+        memory list \
+        --workspace "$WORKSPACE" \
+        --tag prime \
+        --importance critical
+)"
+[[ "$(jq -r '.data | length' <<<"$memory_list_json")" == "1" ]]
+[[ "$(jq -r '.data[0].kind' <<<"$memory_list_json")" == "workflow" ]]
+[[ "$(jq -r '.data[0].audience' <<<"$memory_list_json")" == "both" ]]
+
+memory_prime_json="$(
+    cargo run -q -p threadplane-cli -- \
+        memory prime \
+        --workspace "$WORKSPACE"
+)"
+[[ "$(jq -r '.data | length' <<<"$memory_prime_json")" == "1" ]]
+[[ "$(jq -r '.data[0].memory_id' <<<"$memory_prime_json")" == "$memory_id" ]]
+[[ "$(jq -r '.data[0].recall_triggers | join(",")' <<<"$memory_prime_json")" == "before_codegen,session_start" ]]
+
+memory_link_json="$(
+    cargo run -q -p threadplane-cli -- \
+        link add \
+        --workspace "$WORKSPACE" \
+        --actor operator \
+        --from "$memory_ref" \
+        --relation guides_task \
+        --to "$task_ref"
+)"
+[[ "$(jq -r '.data.relation' <<<"$memory_link_json")" == "guides_task" ]]
+
+memory_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        memory show \
+        --memory-id "$memory_id"
+)"
+[[ "$(jq -r '.data.title' <<<"$memory_show_json")" == "Core engineering memory" ]]
+
+memory_entity_show_json="$(
+    cargo run -q -p threadplane-cli -- \
+        entity show \
+        --entity-ref "$memory_ref"
+)"
+[[ "$(jq -r '.data.entity.kind' <<<"$memory_entity_show_json")" == "memory" ]]
+[[ "$(jq -r '.data.entity.record.memory_id' <<<"$memory_entity_show_json")" == "$memory_id" ]]
+[[ "$(jq -r --arg task_ref "$task_ref" '.data.relations[] | select(.entity_ref == $task_ref) | .relation' <<<"$memory_entity_show_json")" == "GUIDES_TASK" ]]
+
 note_json="$(
     cargo run -q -p threadplane-cli -- \
         note add \

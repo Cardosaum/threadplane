@@ -67,6 +67,46 @@ Request:
   - `query=<search-text>`
   - `limit=1..200`
 
+## Memories
+
+`POST /v1/memories`
+- Create a structured memory with explicit recall metadata.
+
+Request:
+
+```json
+{
+  "workspace": "shared-lab",
+  "author": "agent-c",
+  "title": "Core engineering memory",
+  "body": "Prefer clean bottom-up abstractions and prime new sessions with durable context.",
+  "kind": "workflow",
+  "scope": "workspace",
+  "audience": "both",
+  "importance": "critical",
+  "tags": ["prime", "core"],
+  "recall_triggers": ["session_start", "before_codegen"]
+}
+```
+
+`GET /v1/memories/{memory_id}`
+- Fetch a memory by ID.
+
+`GET /v1/workspaces/{workspace}/memories`
+- List memories for a workspace with optional filters:
+  - `audience=agent|human|both`
+  - `importance=normal|high|critical`
+  - `kind=<normalized-kind>`
+  - `query=<search-text>`
+  - `recall_trigger=<normalized-trigger>`
+  - `tag=<normalized-tag>`
+  - `limit=1..200`
+
+`GET /v1/workspaces/{workspace}/memories/prime`
+- Return the memories a fresh session should load first.
+- Defaults to `audience=agent`, `recall_trigger=session_start`, and `tag=prime`.
+- Accepts the same optional filters as memory listing when you need a different priming shape.
+
 ## Epics
 
 `POST /v1/epics`
@@ -92,15 +132,16 @@ Request:
 ## Entities
 
 `GET /v1/entities/{entity_ref}`
-- Fetch a note, task, or epic through one entity-oriented read model plus its graph-linked relations.
+- Fetch a memory, note, task, or epic through one entity-oriented read model plus its graph-linked relations.
 
 Examples:
 - `task:00000000-0000-0000-0000-000000000000`
+- `memory:00000000-0000-0000-0000-000000000000`
 - `note:00000000-0000-0000-0000-000000000000`
 - `epic:00000000-0000-0000-0000-000000000000`
 
 `GET /v1/entities/{entity_ref}/relations`
-- Fetch only the graph-linked relations for a note, task, or epic.
+- Fetch only the graph-linked relations for a memory, note, task, or epic.
 
 ## Tasks
 

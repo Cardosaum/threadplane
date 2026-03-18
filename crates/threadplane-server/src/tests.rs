@@ -18,8 +18,9 @@ use crate::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
     },
     migration::{
-        COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, PERFORMANCE_INDEXES_MIGRATION_SQL,
-        PROJECTION_OFFSETS_MIGRATION_SQL, WORKSPACE_GOVERNANCE_MIGRATION_SQL,
+        COMMAND_RECEIPTS_MIGRATION_SQL, INITIAL_MIGRATION_SQL, MEMORIES_MIGRATION_SQL,
+        PERFORMANCE_INDEXES_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL,
+        WORKSPACE_GOVERNANCE_MIGRATION_SQL,
     },
     projections::deduplicate_graph_relations,
     storage::{build_projection_status, event_kind_name, parse_event_kind, ProjectionCursor},
@@ -67,6 +68,7 @@ fn normalized_list_limit_clamps_bounds(#[case] requested: Option<i64>, #[case] e
 #[case(EventKind::FactPromoted, "fact_promoted")]
 #[case(EventKind::LinkDeclared, "link_declared")]
 #[case(EventKind::EpicRecorded, "epic_recorded")]
+#[case(EventKind::MemoryRecorded, "memory_recorded")]
 #[case(EventKind::NoteRecorded, "note_recorded")]
 #[case(EventKind::NoteUpdated, "note_updated")]
 #[case(EventKind::TaskClaimed, "task_claimed")]
@@ -161,6 +163,21 @@ fn workspace_governance_migration_covers_policy_membership_and_key_storage(
     #[case] expected_fragment: &str,
 ) {
     let has_fragment = WORKSPACE_GOVERNANCE_MIGRATION_SQL.contains(expected_fragment);
+    assert!(
+        has_fragment,
+        "missing migration fragment: {expected_fragment}"
+    );
+}
+
+#[rstest]
+#[case("CREATE TABLE IF NOT EXISTS memories")]
+#[case("event_id UUID NOT NULL REFERENCES events(event_id) ON DELETE CASCADE")]
+#[case("tags TEXT[] NOT NULL DEFAULT '{}'")]
+#[case("recall_triggers TEXT[] NOT NULL DEFAULT '{}'")]
+#[case("CREATE INDEX IF NOT EXISTS idx_memories_tags_gin")]
+#[case("CREATE INDEX IF NOT EXISTS idx_memories_recall_triggers_gin")]
+fn memories_migration_covers_structured_memory_storage(#[case] expected_fragment: &str) {
+    let has_fragment = MEMORIES_MIGRATION_SQL.contains(expected_fragment);
     assert!(
         has_fragment,
         "missing migration fragment: {expected_fragment}"

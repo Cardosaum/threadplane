@@ -17,7 +17,7 @@ use crate::{
 };
 use threadplane_core::{
     epic_entity_ref, relation_type, task_entity_ref, EpicRecord, GraphRelation, LinkRecord,
-    NoteRecord, TaskClaimRecord, TaskRecord,
+    MemoryRecord, NoteRecord, TaskClaimRecord, TaskRecord,
 };
 
 pub(crate) async fn fetch_entity_relations(
@@ -64,9 +64,12 @@ pub(crate) async fn fetch_entity_relations(
         let body: Option<String> = row.get("body")?;
         let transclusion_id: Option<String> = row.get("transclusion_id")?;
 
-        if let (Some(relation), Some(related_entity_ref), Some(entity_kind), Some(direction)) =
-            (relation_opt, related_entity_ref_opt, entity_kind_opt, direction_opt)
-        {
+        if let (Some(relation), Some(related_entity_ref), Some(entity_kind), Some(direction)) = (
+            relation_opt,
+            related_entity_ref_opt,
+            entity_kind_opt,
+            direction_opt,
+        ) {
             relations.push(GraphRelation {
                 relation,
                 direction,
@@ -126,6 +129,54 @@ pub(crate) async fn project_note(graph: &Graph, note: &NoteRecord) -> ServerResu
             )
             .param("created_at", note.created_at.clone())
             .param("updated_at", note.updated_at.clone()),
+        )
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn project_memory(graph: &Graph, memory: &MemoryRecord) -> ServerResult<()> {
+    graph
+        .run(
+            query(
+                "
+                MERGE (workspace:Workspace {name: $workspace})
+                MERGE (actor:Actor {name: $actor})
+                MERGE (event:Event {event_id: $event_id})
+                MERGE (memory:Entity:Memory {entity_ref: $entity_ref})
+                SET memory.kind = 'memory',
+                    memory.memory_id = $memory_id,
+                    memory.workspace = $workspace,
+                    memory.title = $title,
+                    memory.body = $body,
+                    memory.memory_kind = $memory_kind,
+                    memory.scope = $scope,
+                    memory.audience = $audience,
+                    memory.importance = $importance,
+                    memory.tags = $tags,
+                    memory.recall_triggers = $recall_triggers,
+                    memory.created_at = $created_at,
+                    memory.updated_at = $updated_at
+                MERGE (actor)-[:AUTHORED]->(memory)
+                MERGE (memory)-[:RECORDED_IN]->(workspace)
+                MERGE (memory)-[:FROM_EVENT]->(event)
+                MERGE (actor)-[:EMITTED]->(event)
+                ",
+            )
+            .param("workspace", memory.workspace.clone())
+            .param("actor", memory.author.clone())
+            .param("event_id", memory.event_id.to_string())
+            .param("entity_ref", memory.entity_ref.clone())
+            .param("memory_id", memory.memory_id.to_string())
+            .param("title", memory.title.clone())
+            .param("body", memory.body.clone())
+            .param("memory_kind", memory.kind.to_string())
+            .param("scope", memory.scope.to_string())
+            .param("audience", memory.audience.to_string())
+            .param("importance", memory.importance.to_string())
+            .param("tags", memory.tags.clone())
+            .param("recall_triggers", memory.recall_triggers.clone())
+            .param("created_at", memory.created_at.clone())
+            .param("updated_at", memory.updated_at.clone()),
         )
         .await?;
     Ok(())

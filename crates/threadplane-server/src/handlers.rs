@@ -25,37 +25,38 @@ use crate::{
     },
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
     projections::{
-        fetch_entity_relations, project_claim, project_epic, project_link, project_note,
-        project_task, project_task_dependency_by_id, project_task_supporting_entities,
-        reproject_transclusion_group,
+        fetch_entity_relations, project_claim, project_epic, project_link, project_memory,
+        project_note, project_task, project_task_dependency_by_id,
+        project_task_supporting_entities, reproject_transclusion_group,
     },
     replay::GRAPH_PROJECTION_NAME,
     storage::{
         append_event, append_task_dependency, build_task_list_entries, ensure_workspace_governance,
-        fetch_active_claim, fetch_active_claim_tx, fetch_actor_public_keys,
-        fetch_dependency_chain, fetch_dependent_chain, fetch_direct_dependencies,
-        fetch_direct_dependents, fetch_epic_by_id, fetch_epic_by_id_tx, fetch_entity_record,
-        fetch_epic_for_task, fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
-        fetch_event_rows_after_workspace_cursor, fetch_event_rows_for_workspace, fetch_note_by_id,
+        fetch_active_claim, fetch_active_claim_tx, fetch_actor_public_keys, fetch_dependency_chain,
+        fetch_dependent_chain, fetch_direct_dependencies, fetch_direct_dependents,
+        fetch_entity_record, fetch_epic_by_id, fetch_epic_by_id_tx, fetch_epic_for_task,
+        fetch_epic_rows_for_workspace, fetch_event_row_for_workspace,
+        fetch_event_rows_after_workspace_cursor, fetch_event_rows_for_workspace,
+        fetch_memories_for_listing, fetch_memory_by_id, fetch_memory_by_id_tx, fetch_note_by_id,
         fetch_note_by_id_tx, fetch_notes_for_listing, fetch_projection_status, fetch_task_by_id,
         fetch_task_by_id_tx, fetch_tasks_for_listing, fetch_workspace_memberships,
-        prepare_xanadu_group, record_projection_cursor,
-        require_workspace_role, sync_transclusion_members, task_is_ready, unique_task_ids,
-        update_transclusion_group, upsert_actor_public_key, upsert_workspace_membership,
-        upsert_workspace_policy, workspace_supports_priority, NoteListFilters, TaskListFilters,
-        TaskRow,
+        prepare_xanadu_group, record_projection_cursor, require_workspace_role,
+        sync_transclusion_members, task_is_ready, unique_task_ids, update_transclusion_group,
+        upsert_actor_public_key, upsert_workspace_membership, upsert_workspace_policy,
+        workspace_supports_priority, MemoryListFilters, NoteListFilters, TaskListFilters, TaskRow,
     },
 };
 use threadplane_core::{
-    health_summary, normalize_task_labels, normalize_task_owner, scope_summary, service_snapshot,
-    AddLinkRequest, AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ActorPublicKey,
-    ApiEnvelope, ClaimNextTaskRequest, ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest,
-    CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EpicRecord, EventKind,
-    EventRecord, GrantWorkspaceMembershipRequest, LinkRecord, NoteRecord, OfferTaskRequest,
-    ProjectionStatus, ReleaseTaskRequest, ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag,
-    TaskListEntry, TaskPriority, TaskRecord, UpdateNoteRequest, UpdateTaskRequest,
-    UpdateWorkspacePolicyRequest, WorkspaceMembership, WorkspacePolicy, WorkspaceRole,
-    DEPENDS_ON_RELATION, XANADU_RELATION,
+    health_summary, normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels,
+    normalize_task_owner, scope_summary, service_snapshot, ActorPublicKey, AddLinkRequest,
+    AddTaskDependencyRequest, AddWorkspacePublicKeyRequest, ApiEnvelope, ClaimNextTaskRequest,
+    ClaimTaskRequest, CompleteTaskRequest, CreateEpicRequest, CreateMemoryRequest,
+    CreateNoteRequest, CreateXanaduLinkRequest, EntityContext, EpicRecord, EventKind, EventRecord,
+    GrantWorkspaceMembershipRequest, LinkRecord, MemoryAudience, MemoryImportance, MemoryKind,
+    MemoryRecord, NoteRecord, OfferTaskRequest, ProjectionStatus, ReleaseTaskRequest,
+    ServiceSnapshot, TaskClaimRecord, TaskContext, TaskDag, TaskListEntry, TaskPriority,
+    TaskRecord, UpdateNoteRequest, UpdateTaskRequest, UpdateWorkspacePolicyRequest,
+    WorkspaceMembership, WorkspacePolicy, WorkspaceRole, DEPENDS_ON_RELATION, XANADU_RELATION,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -77,6 +78,17 @@ pub(crate) struct NoteListQuery {
     author: Option<String>,
     limit: Option<i64>,
     query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MemoryListQuery {
+    audience: Option<MemoryAudience>,
+    importance: Option<MemoryImportance>,
+    kind: Option<MemoryKind>,
+    limit: Option<i64>,
+    query: Option<String>,
+    recall_trigger: Option<String>,
+    tag: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -138,7 +150,10 @@ fn idempotency_key(headers: &HeaderMap) -> ServerResult<Option<&str>> {
         .transpose()
 }
 
-async fn ensure_workspace_policy(state: &AppState, workspace: &str) -> ServerResult<WorkspacePolicy> {
+async fn ensure_workspace_policy(
+    state: &AppState,
+    workspace: &str,
+) -> ServerResult<WorkspacePolicy> {
     ensure_workspace_governance(state.pool(), workspace, state.bootstrap()).await
 }
 
@@ -535,11 +550,16 @@ pub(crate) async fn create_epic(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(async {
             project_epic(state.graph(), &record)
                 .await
                 .map_err(ThreadplaneServerError::internal)
-        }))
+        }),
+    )
     .await?;
 
     Ok(success_with_receipt(record, receipt))
@@ -575,6 +595,172 @@ pub(crate) async fn related_entities(
         .map_err(ThreadplaneServerError::internal)?;
 
     Ok(success(relations))
+}
+
+pub(crate) async fn create_memory(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreateMemoryRequest>,
+) -> AppResult<MemoryRecord> {
+    require_workspace_editor(&state, &request.workspace, &request.author).await?;
+    let mut tx = state.pool().begin().await?;
+    let memory_id = Uuid::new_v4();
+    let created_at = Utc::now();
+    let payload = serde_json::to_value(&request)?;
+    let normalized_tags = normalize_memory_tags(request.tags.clone());
+    let normalized_recall_triggers =
+        normalize_memory_recall_triggers(request.recall_triggers.clone());
+    let pending_receipt = match begin_idempotent_command::<MemoryRecord>(
+        &mut tx,
+        IdempotencyContext {
+            actor: &request.author,
+            command_kind: "create_memory",
+            idempotency_key: idempotency_key(&headers)?,
+            request_payload: &payload,
+            workspace: &request.workspace,
+        },
+        created_at,
+    )
+    .await?
+    {
+        CommandExecution::Execute(pending_receipt) => pending_receipt,
+        CommandExecution::Replay(envelope) => {
+            tx.commit().await?;
+            return Ok(Json(envelope));
+        }
+    };
+    let event_id = append_event(
+        &mut tx,
+        &request.workspace,
+        &request.author,
+        EventKind::MemoryRecorded,
+        &payload,
+        created_at,
+    )
+    .await?;
+
+    sqlx::query(
+        "
+        INSERT INTO memories (
+            memory_id,
+            event_id,
+            workspace,
+            author,
+            title,
+            body,
+            kind,
+            scope,
+            audience,
+            importance,
+            tags,
+            recall_triggers,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+        ",
+    )
+    .bind(memory_id)
+    .bind(event_id)
+    .bind(&request.workspace)
+    .bind(&request.author)
+    .bind(&request.title)
+    .bind(&request.body)
+    .bind(request.kind.as_str())
+    .bind(request.scope.to_string())
+    .bind(request.audience.to_string())
+    .bind(request.importance.to_string())
+    .bind(&normalized_tags)
+    .bind(&normalized_recall_triggers)
+    .bind(created_at)
+    .execute(&mut *tx)
+    .await?;
+    let record = MemoryRecord::try_from(
+        fetch_memory_by_id_tx(&mut tx, memory_id, &request.workspace).await?,
+    )?;
+    let receipt =
+        complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
+    tx.commit().await?;
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(async {
+            project_memory(state.graph(), &record)
+                .await
+                .map_err(|error| {
+                    error!(?error, memory_id = %record.memory_id, "failed to project memory");
+                    ThreadplaneServerError::internal(error)
+                })
+        }),
+    )
+    .await?;
+
+    Ok(success_with_receipt(record, receipt))
+}
+
+pub(crate) async fn show_memory(
+    State(state): State<AppState>,
+    Path(memory_id): Path<Uuid>,
+) -> AppResult<MemoryRecord> {
+    let row = fetch_memory_by_id(state.pool(), memory_id).await?;
+    Ok(success(MemoryRecord::try_from(row)?))
+}
+
+pub(crate) async fn list_memories(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<MemoryListQuery>,
+) -> AppResult<Vec<MemoryRecord>> {
+    ensure_workspace_policy(&state, &workspace).await?;
+    let limit = normalized_list_limit(query.limit);
+    let rows = fetch_memories_for_listing(
+        state.pool(),
+        &workspace,
+        MemoryListFilters {
+            audience: query.audience,
+            importance: query.importance,
+            kind: query.kind.as_ref(),
+            query: query.query.as_deref(),
+            recall_trigger: query.recall_trigger.as_deref(),
+            tag: query.tag.as_deref(),
+        },
+        limit,
+    )
+    .await?;
+    let data = rows
+        .into_iter()
+        .map(MemoryRecord::try_from)
+        .collect::<ServerResult<Vec<_>>>()?;
+    Ok(success(data))
+}
+
+pub(crate) async fn prime_memories(
+    State(state): State<AppState>,
+    Path(workspace): Path<String>,
+    Query(query): Query<MemoryListQuery>,
+) -> AppResult<Vec<MemoryRecord>> {
+    ensure_workspace_policy(&state, &workspace).await?;
+    let limit = normalized_list_limit(query.limit);
+    let rows = fetch_memories_for_listing(
+        state.pool(),
+        &workspace,
+        MemoryListFilters {
+            audience: Some(query.audience.unwrap_or(MemoryAudience::Agent)),
+            importance: query.importance,
+            kind: query.kind.as_ref(),
+            query: query.query.as_deref(),
+            recall_trigger: query.recall_trigger.as_deref().or(Some("session_start")),
+            tag: query.tag.as_deref().or(Some("prime")),
+        },
+        limit,
+    )
+    .await?;
+    let data = rows
+        .into_iter()
+        .map(MemoryRecord::try_from)
+        .collect::<ServerResult<Vec<_>>>()?;
+    Ok(success(data))
 }
 
 pub(crate) async fn create_note(
@@ -645,12 +831,17 @@ pub(crate) async fn create_note(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(async {
             project_note(state.graph(), &record).await.map_err(|error| {
                 error!(?error, note_id = %record.note_id, "failed to project note");
                 ThreadplaneServerError::internal(error)
             })
-        }))
+        }),
+    )
     .await?;
 
     Ok(success_with_receipt(record, receipt))
@@ -761,7 +952,11 @@ pub(crate) async fn update_note(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &request.workspace,
+        event_id,
+        Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(&state, group_id, None)
                     .await
@@ -771,7 +966,8 @@ pub(crate) async fn update_note(
                     .await
                     .map_err(ThreadplaneServerError::internal)
             }
-        }))
+        }),
+    )
     .await?;
     Ok(success_with_receipt(record, receipt))
 }
@@ -935,7 +1131,11 @@ pub(crate) async fn update_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &request.workspace,
+        event_id,
+        Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(&state, group_id, None)
                     .await
@@ -944,7 +1144,8 @@ pub(crate) async fn update_task(
             }
 
             project_task_record(&state, &record).await
-        }))
+        }),
+    )
     .await?;
     Ok(success_with_receipt(record, receipt))
 }
@@ -998,7 +1199,12 @@ pub(crate) async fn claim_task(
         &state,
         &record.workspace,
         record.event_id,
-        Box::pin(project_claimed_task_record(&state, &task, &task_record, &record)),
+        Box::pin(project_claimed_task_record(
+            &state,
+            &task,
+            &task_record,
+            &record,
+        )),
     )
     .await?;
 
@@ -1233,7 +1439,11 @@ pub(crate) async fn add_task_dependency(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &data, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(&state, &request.workspace, event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &request.workspace,
+        event_id,
+        Box::pin(async {
             project_task_dependency_by_id(
                 state.graph(),
                 state.pool(),
@@ -1242,7 +1452,8 @@ pub(crate) async fn add_task_dependency(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        }))
+        }),
+    )
     .await?;
 
     Ok(success_with_receipt(data, receipt))
@@ -1330,12 +1541,17 @@ pub(crate) async fn add_link(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(async {
             project_link(state.graph(), &record).await.map_err(|error| {
                 error!(?error, link_id = %record.link_id, "failed to project link");
                 ThreadplaneServerError::internal(error)
             })
-        }))
+        }),
+    )
     .await?;
 
     Ok(success_with_receipt(record, receipt))
@@ -1430,7 +1646,11 @@ pub(crate) async fn add_xanadu_link(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(&state, &record.workspace, record.event_id, Box::pin(async {
+    project_graph_event(
+        &state,
+        &record.workspace,
+        record.event_id,
+        Box::pin(async {
             reproject_transclusion_group(
                 &state,
                 xanadu_group.canonical_group_id,
@@ -1438,7 +1658,8 @@ pub(crate) async fn add_xanadu_link(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        }))
+        }),
+    )
     .await?;
 
     Ok(success_with_receipt(record, receipt))
@@ -1467,8 +1688,8 @@ pub(crate) async fn tail_events(
     } else {
         None
     };
-    let rows = fetch_event_rows_after_workspace_cursor(state.pool(), &workspace, cursor, limit)
-        .await?;
+    let rows =
+        fetch_event_rows_after_workspace_cursor(state.pool(), &workspace, cursor, limit).await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
     Ok(success(data))
 }
@@ -1660,8 +1881,8 @@ pub(crate) async fn claim_next_task(
         ready_only: true,
         status: Some("open"),
     };
-    let candidates = fetch_tasks_for_listing(state.pool(), &request.workspace, filters, Some(25))
-        .await?;
+    let candidates =
+        fetch_tasks_for_listing(state.pool(), &request.workspace, filters, Some(25)).await?;
 
     for candidate in candidates {
         let mut tx = state.pool().begin().await?;
@@ -1712,7 +1933,12 @@ pub(crate) async fn claim_next_task(
                     &state,
                     &record.workspace,
                     record.event_id,
-                    Box::pin(project_claimed_task_record(&state, &task, &task_record, &record)),
+                    Box::pin(project_claimed_task_record(
+                        &state,
+                        &task,
+                        &task_record,
+                        &record,
+                    )),
                 )
                 .await?;
                 return Ok(success_with_receipt(Some(record), receipt));
@@ -1746,9 +1972,10 @@ pub(crate) async fn task_context(
     let epic = fetch_epic_for_task(state.pool(), &task).await?;
     let dependencies = fetch_direct_dependencies(state.pool(), task_id).await?;
     let dependents = fetch_direct_dependents(state.pool(), task_id).await?;
-    let relations = fetch_entity_relations(state.graph(), &threadplane_core::task_entity_ref(task_id))
-        .await
-        .map_err(ThreadplaneServerError::internal)?;
+    let relations =
+        fetch_entity_relations(state.graph(), &threadplane_core::task_entity_ref(task_id))
+            .await
+            .map_err(ThreadplaneServerError::internal)?;
 
     let data = TaskContext {
         task: task.clone().into(),

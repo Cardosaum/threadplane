@@ -25,19 +25,20 @@ use tracing::{error, info};
 use tracing_subscriber::{fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use crate::error::{
-    BindListener, ConnectNeo4j, ConnectPostgres, InvalidBindAddress,
-    InvalidWorkspaceBootstrap, LoadConfig, Serve, VerifyNeo4j,
+    BindListener, ConnectNeo4j, ConnectPostgres, InvalidBindAddress, InvalidWorkspaceBootstrap,
+    LoadConfig, Serve, VerifyNeo4j,
 };
 use crate::{
     error::ServerResult,
     handlers::{
-        add_link, add_task_dependency, add_workspace_public_key, add_xanadu_link,
-        claim_next_task, claim_task, complete_task, create_epic, create_note,
-        grant_workspace_membership, healthz, list_epics, list_events, list_notes,
+        add_link, add_task_dependency, add_workspace_public_key, add_xanadu_link, claim_next_task,
+        claim_task, complete_task, create_epic, create_memory, create_note,
+        grant_workspace_membership, healthz, list_epics, list_events, list_memories, list_notes,
         list_open_tasks, list_tasks, list_workspace_memberships, list_workspace_public_keys,
-        next_task, offer_task, projection_status, related_entities, release_task, root, scope,
-        show_entity, show_epic, show_note, show_task, show_workspace_policy, tail_events,
-        task_context, task_dag, update_note, update_task, update_workspace_policy,
+        next_task, offer_task, prime_memories, projection_status, related_entities, release_task,
+        root, scope, show_entity, show_epic, show_memory, show_note, show_task,
+        show_workspace_policy, tail_events, task_context, task_dag, update_note, update_task,
+        update_workspace_policy,
     },
     lifecycle::{wait_for_shutdown, watch_for_shutdown_signal},
     migration::run_migrations,
@@ -164,10 +165,12 @@ impl WorkspaceGovernanceBootstrap {
             priorities: config.priorities.clone(),
             workspace: "__bootstrap__".to_owned(),
         })
-        .map_err(|error| InvalidWorkspaceBootstrap {
-            reason: error.to_string(),
-        }
-        .build())?;
+        .map_err(|error| {
+            InvalidWorkspaceBootstrap {
+                reason: error.to_string(),
+            }
+            .build()
+        })?;
 
         Ok(Self::new(
             config.auth,
@@ -371,6 +374,7 @@ fn api_v1_router() -> Router<AppState> {
         .nest("/entities", entity_routes())
         .nest("/epics", epic_routes())
         .nest("/links", link_routes())
+        .nest("/memories", memory_routes())
         .nest("/notes", note_routes())
         .nest("/projections", projection_routes())
         .nest("/tasks", task_routes())
@@ -397,6 +401,16 @@ fn link_routes() -> Router<AppState> {
     Router::new()
         .route("/", post(add_link))
         .route("/xanadu", post(add_xanadu_link))
+}
+
+fn memory_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", post(create_memory))
+        .nest("/{memory_id}", memory_member_routes())
+}
+
+fn memory_member_routes() -> Router<AppState> {
+    Router::new().route("/", get(show_memory))
 }
 
 fn note_routes() -> Router<AppState> {
@@ -440,10 +454,21 @@ fn workspace_routes() -> Router<AppState> {
         .route("/epics", get(list_epics))
         .route("/events", get(list_events))
         .route("/events/tail", get(tail_events))
+        .route("/memories", get(list_memories))
+        .route("/memories/prime", get(prime_memories))
         .route("/notes", get(list_notes))
-        .route("/policy", get(show_workspace_policy).put(update_workspace_policy))
-        .route("/memberships", get(list_workspace_memberships).post(grant_workspace_membership))
-        .route("/keys", get(list_workspace_public_keys).post(add_workspace_public_key))
+        .route(
+            "/policy",
+            get(show_workspace_policy).put(update_workspace_policy),
+        )
+        .route(
+            "/memberships",
+            get(list_workspace_memberships).post(grant_workspace_membership),
+        )
+        .route(
+            "/keys",
+            get(list_workspace_public_keys).post(add_workspace_public_key),
+        )
         .nest("/tasks", workspace_task_routes())
 }
 

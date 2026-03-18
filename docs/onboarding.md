@@ -132,11 +132,34 @@ cargo run -p threadplane-cli -- note add \
   --body "Claims should expire and return tasks to the pool."
 ```
 
+Capture a structured memory and use it to prime a fresh session:
+
+```bash
+cargo run -p threadplane-cli -- memory add \
+  --workspace shared-lab \
+  --author agent-c \
+  --title "Core engineering memory" \
+  --body "Prefer clean bottom-up abstractions and prime new sessions with durable context." \
+  --kind workflow \
+  --scope workspace \
+  --audience both \
+  --importance critical \
+  --tag prime \
+  --tag core \
+  --recall-trigger session_start \
+  --recall-trigger before_codegen
+
+cargo run -p threadplane-cli -- memory prime \
+  --workspace shared-lab \
+  --format compact
+```
+
 Later, rediscover it with:
 
 ```bash
 cargo run -p threadplane-cli -- note list --workspace shared-lab --format compact
 cargo run -p threadplane-cli -- note search --workspace shared-lab --query "lease" --format compact
+cargo run -p threadplane-cli -- memory list --workspace shared-lab --tag prime --format compact
 ```
 
 Create a Xanadu link:
@@ -213,6 +236,7 @@ If you want a single command that proves the vertical slice works end to end:
 That script boots the local stack, starts the API server, runs the CLI against it, and verifies:
 
 - first-class epic creation
+- first-class memory creation and session priming
 - DAG dependency declaration
 - ready-only task listing
 - task offers

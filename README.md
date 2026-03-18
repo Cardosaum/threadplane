@@ -46,6 +46,7 @@ Most agent tooling gets one or two pieces right:
 ## What You Can Do Today
 
 - create epics, tasks, notes, and graph links
+- create structured memories and prime new sessions with them
 - model task dependencies as a DAG
 - list only ready work whose prerequisites are done
 - claim, release, and complete tasks with expiring leases
@@ -274,6 +275,36 @@ $ tplane task claim-next \
 }
 ```
 
+Capture a durable startup memory and prime a fresh agent session with it:
+
+```bash
+$ tplane memory add \
+    --workspace shared-lab \
+    --author agent-c \
+    --title "Core engineering memory" \
+    --body "Prefer clean bottom-up abstractions and prime new sessions with durable context." \
+    --kind workflow \
+    --scope workspace \
+    --audience both \
+    --importance critical \
+    --tag prime \
+    --tag core \
+    --recall-trigger session_start \
+    --recall-trigger before_codegen
+{
+  "ok": true,
+  "data": {
+    "memory_id": "<memory-id>",
+    "entity_ref": "memory:<memory-id>",
+    "kind": "workflow",
+    "importance": "critical"
+  }
+}
+
+$ tplane memory prime --workspace shared-lab --format compact
+9c0a6e54 | Core engineering memory | kind=workflow | importance=critical | audience=both | tags=core,prime
+```
+
 Create a note and link it with Xanadu semantics:
 
 ```bash
@@ -355,6 +386,19 @@ f2548a6a | xanadu_linked | actor=agent-a | at=...
 ### Workspace
 
 A shared namespace where agents and people collaborate. Tasks, notes, epics, links, memberships, and policy are all scoped to a workspace.
+
+### Memory
+
+A first-class durable memory record with structured recall metadata:
+
+- `kind` answers what sort of memory this is
+- `tags` help group and retrieve it intentionally
+- `audience` controls whether it is meant for humans, agents, or both
+- `scope` says whether it applies to the workspace, repo, or globally
+- `importance` gives prime and list views a stable ranking
+- `recall_triggers` let you ask for memories like `session_start` or `before_codegen`
+
+This is the foundation for `tplane memory prime`, which is the Threadplane equivalent of “what should I load into context before I start?”
 
 ### Epic
 
@@ -480,6 +524,7 @@ High-value commands:
 - `tplane projection status`
 - `tplane build compare`
 - `tplane epic add|list|show`
+- `tplane memory add|list|prime|show`
 - `tplane task offer|list|next|claim|claim-next|release|complete|show|context|dag|depend|blocked-by|blocks|triage|update`
 - `tplane note add|list|search|show|update`
 - `tplane entity show|related`

@@ -10,13 +10,14 @@ use uuid::Uuid;
 use crate::{
     build_info, compare_build_info, default_config_path, default_system_config_paths,
     discover_threadplane_config, epic_entity_ref, load_threadplane_config_with_overrides,
-    load_threadplane_config_with_path, normalize_task_labels, normalize_task_owner,
-    normalize_workspace_priority_name, note_entity_ref, parse_entity_ref, relation_type,
-    scope_summary, service_snapshot, task_entity_ref, validate_workspace_auth_policy,
-    validate_workspace_policy, validate_workspace_priority_policy, CliConfigOverrides, EntityRef,
-    EventKind, PublicKeyAlgorithm, TaskPriority, ThreadplaneConfigOverrides,
-    WorkspaceAuthPolicy, WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy,
-    WorkspaceRole, ENV_PREFIX,
+    load_threadplane_config_with_path, memory_entity_ref, normalize_memory_kind_name,
+    normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels,
+    normalize_task_owner, normalize_workspace_priority_name, note_entity_ref, parse_entity_ref,
+    relation_type, scope_summary, service_snapshot, task_entity_ref,
+    validate_workspace_auth_policy, validate_workspace_policy, validate_workspace_priority_policy,
+    CliConfigOverrides, EntityRef, EventKind, MemoryAudience, MemoryImportance, MemoryKind,
+    MemoryScope, PublicKeyAlgorithm, TaskPriority, ThreadplaneConfigOverrides, WorkspaceAuthPolicy,
+    WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy, WorkspaceRole, ENV_PREFIX,
 };
 
 fn relation_inputs() -> impl Strategy<Value = String> {
@@ -35,6 +36,10 @@ fn uuid_inputs() -> impl Strategy<Value = Uuid> {
 #[case(
     "note:550e8400-e29b-41d4-a716-446655440000",
     Some(EntityRef::Note(Uuid::from_u128(0x550e_8400_e29b_41d4_a716_4466_5544_0000,)))
+)]
+#[case(
+    "memory:550e8400-e29b-41d4-a716-446655440000",
+    Some(EntityRef::Memory(Uuid::from_u128(0x550e_8400_e29b_41d4_a716_4466_5544_0000,)))
 )]
 #[case(
     "task:550e8400-e29b-41d4-a716-446655440000",
@@ -63,6 +68,7 @@ fn relation_type_normalizes_examples(#[case] input: &str, #[case] expected: &str
 #[case(EventKind::FactPromoted)]
 #[case(EventKind::LinkDeclared)]
 #[case(EventKind::EpicRecorded)]
+#[case(EventKind::MemoryRecorded)]
 #[case(EventKind::NoteRecorded)]
 #[case(EventKind::NoteUpdated)]
 #[case(EventKind::TaskClaimed)]
@@ -110,9 +116,7 @@ fn scope_summary_embeds_build_identity() {
         true,
     );
     let scope = scope_summary(&build_identity);
-    let build_object = scope
-        .get("build")
-        .and_then(serde_json::Value::as_object);
+    let build_object = scope.get("build").and_then(serde_json::Value::as_object);
 
     assert_eq!(
         build_object.and_then(|value| value.get("service")),
@@ -162,7 +166,10 @@ fn compare_build_info_reports_field_differences() {
 
     assert!(!comparison.matches);
     assert_eq!(comparison.differences.len(), 4);
-    assert_eq!(fields, vec!["version", "build_profile", "git_commit", "git_dirty"]);
+    assert_eq!(
+        fields,
+        vec!["version", "build_profile", "git_commit", "git_dirty"]
+    );
 }
 
 #[test]
@@ -170,17 +177,26 @@ fn xdg_config_paths_use_threadplane_standard_locations() -> Result<(), Box<dyn E
     let user_path = default_config_path()?;
     let system_paths = default_system_config_paths()?;
 
-    if !user_path.to_string_lossy().ends_with("threadplane/config.toml") {
-        return Err(Box::new(io::Error::other("unexpected XDG user config path")));
+    if !user_path
+        .to_string_lossy()
+        .ends_with("threadplane/config.toml")
+    {
+        return Err(Box::new(io::Error::other(
+            "unexpected XDG user config path",
+        )));
     }
     if system_paths.is_empty() {
-        return Err(Box::new(io::Error::other("missing XDG system config paths")));
+        return Err(Box::new(io::Error::other(
+            "missing XDG system config paths",
+        )));
     }
     if !system_paths
         .iter()
         .all(|path| path.to_string_lossy().ends_with("threadplane/config.toml"))
     {
-        return Err(Box::new(io::Error::other("unexpected XDG system config path")));
+        return Err(Box::new(io::Error::other(
+            "unexpected XDG system config path",
+        )));
     }
 
     Ok(())
@@ -276,8 +292,14 @@ bind = "127.0.0.1:4321"
         let config_path = jail.directory().join("config.toml");
 
         let load_result = load_threadplane_config_with_path(Some(config_path.as_path()));
-        assert!(load_result.is_err(), "incomplete config unexpectedly loaded");
-        let rendered = load_result.err().map(|error| error.to_string()).unwrap_or_default();
+        assert!(
+            load_result.is_err(),
+            "incomplete config unexpectedly loaded"
+        );
+        let rendered = load_result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
         assert!(rendered.contains("configuration load failed"));
 
         Ok(())
@@ -306,6 +328,78 @@ fn normalize_task_owner_trims_and_discards_empty_values(
 }
 
 #[rstest]
+#[case("Core Memory", "core_memory")]
+#[case("workflow/policy", "workflow_policy")]
+#[case("   ", "")]
+fn normalize_memory_kind_name_examples(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(normalize_memory_kind_name(input), expected);
+}
+
+#[rstest]
+#[case(vec!["Prime".to_owned(), "core".to_owned(), " prime ".to_owned()], vec!["core".to_owned(), "prime".to_owned()])]
+#[case(vec![String::new(), "  ".to_owned()], Vec::<String>::new())]
+fn normalize_memory_tags_dedups_and_trims(
+    #[case] input: Vec<String>,
+    #[case] expected: Vec<String>,
+) {
+    assert_eq!(normalize_memory_tags(input), expected);
+}
+
+#[rstest]
+#[case(vec!["Session Start".to_owned(), "pre_compact".to_owned(), "session-start".to_owned()], vec!["pre_compact".to_owned(), "session_start".to_owned()])]
+#[case(vec![String::new()], Vec::<String>::new())]
+fn normalize_memory_recall_triggers_normalize_identifier_lists(
+    #[case] input: Vec<String>,
+    #[case] expected: Vec<String>,
+) {
+    assert_eq!(normalize_memory_recall_triggers(input), expected);
+}
+
+#[rstest]
+#[case("workflow_memory", Some("workflow_memory"))]
+#[case("   ", None)]
+fn memory_kind_parses_and_normalizes_values(#[case] input: &str, #[case] expected: Option<&str>) {
+    assert_eq!(
+        input
+            .parse::<MemoryKind>()
+            .ok()
+            .map(|kind| kind.to_string()),
+        expected.map(str::to_owned)
+    );
+}
+
+#[rstest]
+#[case(MemoryAudience::Agent, MemoryAudience::Agent, true)]
+#[case(MemoryAudience::Both, MemoryAudience::Agent, true)]
+#[case(MemoryAudience::Human, MemoryAudience::Agent, false)]
+fn memory_audience_matches_requested_consumers(
+    #[case] stored: MemoryAudience,
+    #[case] requested: MemoryAudience,
+    #[case] expected: bool,
+) {
+    assert_eq!(stored.includes(requested), expected);
+}
+
+#[rstest]
+#[case(MemoryImportance::Normal, 10)]
+#[case(MemoryImportance::High, 20)]
+#[case(MemoryImportance::Critical, 30)]
+fn memory_importance_exposes_stable_sort_ranks(
+    #[case] importance: MemoryImportance,
+    #[case] expected_rank: u8,
+) {
+    assert_eq!(importance.rank(), expected_rank);
+}
+
+#[rstest]
+#[case(MemoryScope::Workspace, "workspace")]
+#[case(MemoryScope::Repo, "repo")]
+#[case(MemoryScope::Global, "global")]
+fn memory_scope_serializes_to_snake_case(#[case] scope: MemoryScope, #[case] expected: &str) {
+    assert_eq!(scope.to_string(), expected);
+}
+
+#[rstest]
 #[case("low", "low")]
 #[case("medium", "medium")]
 #[case("high", "high")]
@@ -313,7 +407,10 @@ fn normalize_task_owner_trims_and_discards_empty_values(
 #[case("Urgent Fix", "urgent_fix")]
 fn task_priority_parses_and_normalizes_values(#[case] input: &str, #[case] expected: &str) {
     assert_eq!(
-        input.parse::<TaskPriority>().ok().map(|priority| priority.to_string()),
+        input
+            .parse::<TaskPriority>()
+            .ok()
+            .map(|priority| priority.to_string()),
         Some(expected.to_owned())
     );
 }
@@ -337,10 +434,7 @@ fn workspace_role_capabilities_are_ordered(
 #[case("Urgent Fix", "urgent_fix")]
 #[case("expedite-now", "expedite_now")]
 #[case("  customer blocker  ", "customer_blocker")]
-fn normalize_workspace_priority_name_examples(
-    #[case] input: &str,
-    #[case] expected: &str,
-) {
+fn normalize_workspace_priority_name_examples(#[case] input: &str, #[case] expected: &str) {
     assert_eq!(normalize_workspace_priority_name(input), expected);
 }
 
@@ -418,10 +512,7 @@ fn validate_workspace_auth_policy_rejects_empty_algorithm_lists() {
 fn validate_workspace_policy_accepts_governed_workspace_shape() {
     let policy = WorkspacePolicy {
         auth: WorkspaceAuthPolicy {
-            allowed_algorithms: vec![
-                PublicKeyAlgorithm::SshEd25519,
-                PublicKeyAlgorithm::Ed25519,
-            ],
+            allowed_algorithms: vec![PublicKeyAlgorithm::SshEd25519, PublicKeyAlgorithm::Ed25519],
             challenge_ttl_seconds: 90,
             signed_commands_required: true,
         },
@@ -435,13 +526,25 @@ fn validate_workspace_policy_accepts_governed_workspace_shape() {
 #[test]
 fn workspace_priority_policy_exposes_default_and_support_checks() {
     let policy = sample_workspace_priority_policy();
-    let default_priority = policy.default_task_priority().map(|value| value.to_string());
+    let default_priority = policy
+        .default_task_priority()
+        .map(|value| value.to_string());
     let expedite_priority = TaskPriority::new("expedite");
     let background_priority = TaskPriority::new("background");
 
     assert_eq!(default_priority.as_deref(), Some("normal"));
-    assert_eq!(expedite_priority.as_ref().map(|value| policy.supports(value)), Some(true));
-    assert_eq!(background_priority.as_ref().and_then(|value| policy.rank_for(value)), Some(10));
+    assert_eq!(
+        expedite_priority
+            .as_ref()
+            .map(|value| policy.supports(value)),
+        Some(true)
+    );
+    assert_eq!(
+        background_priority
+            .as_ref()
+            .and_then(|value| policy.rank_for(value)),
+        Some(10)
+    );
 }
 
 proptest::proptest! {
@@ -455,6 +558,12 @@ proptest::proptest! {
     fn formatted_note_refs_round_trip(note_id in uuid_inputs()) {
         let entity_ref = note_entity_ref(note_id);
         prop_assert_eq!(parse_entity_ref(&entity_ref), Some(EntityRef::Note(note_id)));
+    }
+
+    #[test]
+    fn formatted_memory_refs_round_trip(memory_id in uuid_inputs()) {
+        let entity_ref = memory_entity_ref(memory_id);
+        prop_assert_eq!(parse_entity_ref(&entity_ref), Some(EntityRef::Memory(memory_id)));
     }
 
     #[test]

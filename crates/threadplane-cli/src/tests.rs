@@ -5,15 +5,17 @@ use uuid::Uuid;
 
 use crate::command::{
     build_mismatch_warning, dedup_task_ids, entity_relations_path, entity_show_path,
-    events_list_path, events_tail_path, note_list_path, render_entity_context_compact,
-    render_event_list_compact, render_graph_relations_compact, render_note_list_compact,
-    render_task_dependency_compact, render_task_list_compact, triage_has_changes,
+    events_list_path, events_tail_path, memory_list_path, note_list_path,
+    render_entity_context_compact, render_event_list_compact, render_graph_relations_compact,
+    render_memory_list_compact, render_note_list_compact, render_task_dependency_compact,
+    render_task_list_compact, triage_has_changes, MemoryListPathArgs,
 };
 use crate::error::{ContractMismatchDetails, JsonContractMismatch};
 use threadplane_core::{
     build_info, compare_build_info, EntityContext, EntityRecord, EpicRecord, EventKind,
-    EventRecord, GraphRelation, NoteRecord, TaskClaimRecord, TaskDependencySummary, TaskListEntry,
-    TaskMetadata, TaskPriority, TaskSummary,
+    EventRecord, GraphRelation, MemoryAudience, MemoryImportance, MemoryKind, MemoryRecord,
+    MemoryScope, NoteRecord, TaskClaimRecord, TaskDependencySummary, TaskListEntry, TaskMetadata,
+    TaskPriority, TaskSummary,
 };
 
 fn sample_task_metadata() -> TaskMetadata {
@@ -26,7 +28,13 @@ fn sample_task_metadata() -> TaskMetadata {
 
 #[test]
 fn build_mismatch_warning_lists_changed_fields() {
-    let client = build_info("threadplane-cli", "0.1.0", "debug", Some("aaaaaaaaaaaa"), true);
+    let client = build_info(
+        "threadplane-cli",
+        "0.1.0",
+        "debug",
+        Some("aaaaaaaaaaaa"),
+        true,
+    );
     let server = build_info(
         "threadplane-server",
         "0.1.1",
@@ -45,8 +53,20 @@ fn build_mismatch_warning_lists_changed_fields() {
 
 #[test]
 fn build_mismatch_warning_is_absent_when_builds_match() {
-    let client = build_info("threadplane-cli", "0.1.0", "debug", Some("aaaaaaaaaaaa"), true);
-    let server = build_info("threadplane-cli", "0.1.0", "debug", Some("aaaaaaaaaaaa"), true);
+    let client = build_info(
+        "threadplane-cli",
+        "0.1.0",
+        "debug",
+        Some("aaaaaaaaaaaa"),
+        true,
+    );
+    let server = build_info(
+        "threadplane-cli",
+        "0.1.0",
+        "debug",
+        Some("aaaaaaaaaaaa"),
+        true,
+    );
     let comparison = compare_build_info(&client, &server);
 
     assert!(build_mismatch_warning(&comparison).is_none());
@@ -65,7 +85,9 @@ fn contract_mismatch_error_mentions_build_compare_guidance() {
         json_path: "data.labels".to_owned(),
         url: "http://127.0.0.1:4000/v1/workspaces/threadplane-dev/tasks".to_owned(),
     }
-    .into_error(serde_json::Error::io(IoError::other("missing field `labels`")));
+    .into_error(serde_json::Error::io(IoError::other(
+        "missing field `labels`",
+    )));
 
     let rendered = error.to_string();
 
@@ -182,6 +204,33 @@ fn render_note_list_compact_formats_entries() {
 }
 
 #[test]
+fn render_memory_list_compact_formats_entries() {
+    let rendered = render_memory_list_compact(&[MemoryRecord {
+        audience: MemoryAudience::Agent,
+        author: "codex".to_owned(),
+        body: "Start with clean bottom-up abstractions.".to_owned(),
+        created_at: "2026-03-17T04:00:00Z".to_owned(),
+        entity_ref: "memory:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+        event_id: Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+        importance: MemoryImportance::Critical,
+        kind: MemoryKind::from_lossy("workflow"),
+        memory_id: Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap_or_default(),
+        recall_triggers: vec!["session_start".to_owned()],
+        scope: MemoryScope::Workspace,
+        tags: vec!["core".to_owned(), "prime".to_owned()],
+        title: "Implementation quality first".to_owned(),
+        updated_at: "2026-03-17T04:05:00Z".to_owned(),
+        workspace: "threadplane-dev".to_owned(),
+    }]);
+
+    assert!(rendered.contains("11111111 | Implementation quality first"));
+    assert!(rendered.contains("kind=workflow"));
+    assert!(rendered.contains("importance=critical"));
+    assert!(rendered.contains("audience=agent"));
+    assert!(rendered.contains("tags=core,prime"));
+}
+
+#[test]
 fn render_event_list_compact_formats_entries() {
     let rendered = render_event_list_compact(&[EventRecord {
         actor: "codex".to_owned(),
@@ -244,17 +293,60 @@ fn render_entity_context_compact_formats_task_summary_and_relations() {
 }
 
 #[test]
+fn render_entity_context_compact_formats_memory_summary() {
+    let rendered = render_entity_context_compact(&EntityContext {
+        entity: EntityRecord::Memory(MemoryRecord {
+            audience: MemoryAudience::Both,
+            author: "operator".to_owned(),
+            body: "Always prime agents with startup context.".to_owned(),
+            created_at: "2026-03-17T04:00:00Z".to_owned(),
+            entity_ref: "memory:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned(),
+            event_id: Uuid::parse_str("cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+            importance: MemoryImportance::High,
+            kind: MemoryKind::from_lossy("workflow"),
+            memory_id: Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap_or_default(),
+            recall_triggers: vec!["session_start".to_owned()],
+            scope: MemoryScope::Workspace,
+            tags: vec!["prime".to_owned()],
+            title: "Prime before coding".to_owned(),
+            updated_at: "2026-03-17T04:00:00Z".to_owned(),
+            workspace: "threadplane-dev".to_owned(),
+        }),
+        relations: Vec::new(),
+    });
+
+    assert!(rendered.contains("memory aaaaaaaa | Prime before coding"));
+    assert!(rendered.contains("kind=workflow"));
+    assert!(rendered.contains("importance=high"));
+}
+
+#[test]
 fn note_list_path_applies_optional_filters() {
-    let path = note_list_path(
-        "threadplane-dev",
-        Some(10),
-        Some(" codex "),
-        Some("lease"),
-    );
+    let path = note_list_path("threadplane-dev", Some(10), Some(" codex "), Some("lease"));
 
     assert_eq!(
         path,
         "/v1/workspaces/threadplane-dev/notes?limit=10&author=codex&query=lease"
+    );
+}
+
+#[test]
+fn memory_list_path_applies_structured_filters() {
+    let path = memory_list_path(MemoryListPathArgs {
+        audience: Some("agent"),
+        importance: Some("critical"),
+        kind: Some("Workflow Note"),
+        limit: Some(10),
+        query: Some("quality"),
+        recall_trigger: Some("session start"),
+        tag: Some("Prime"),
+        workspace: "threadplane-dev",
+    })
+    .unwrap_or_default();
+
+    assert_eq!(
+        path,
+        "/v1/workspaces/threadplane-dev/memories?limit=10&audience=agent&importance=critical&kind=workflow_note&query=quality&recall_trigger=session_start&tag=prime"
     );
 }
 
