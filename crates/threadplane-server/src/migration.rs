@@ -4,10 +4,10 @@
 )]
 
 use snafu::ResultExt as _;
-use sqlx::{migrate::Migrator, PgPool};
+use sqlx::migrate::Migrator;
 use std::path::Path;
 
-use crate::error::{DatabaseMigration, ServerResult};
+use crate::{error::DatabaseMigration, prelude::*};
 
 #[cfg(test)]
 pub(crate) const INITIAL_MIGRATION_SQL: &str = include_str!("../migrations/0001_initial.sql");

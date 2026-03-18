@@ -1,18 +1,13 @@
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use chrono::Utc;
 use proptest::arbitrary::any;
 use proptest::prop_assert_eq;
 use rstest::rstest;
 use tokio::sync::Barrier;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
 use crate::{
-    app::ProjectionCoordinator,
     build_info::current_build_info,
-    error::ThreadplaneServerError,
     handlers::normalized_list_limit,
     lifecycle::{
         calculate_claim_expiry, normalized_lease_seconds, wait_for_shutdown, MINIMUM_LEASE_SECONDS,
@@ -22,6 +17,7 @@ use crate::{
         PERFORMANCE_INDEXES_MIGRATION_SQL, PROJECTION_OFFSETS_MIGRATION_SQL,
         WORKSPACE_GOVERNANCE_MIGRATION_SQL,
     },
+    prelude::*,
     projections::deduplicate_graph_relations,
     storage::{build_projection_status, event_kind_name, parse_event_kind, ProjectionCursor},
 };

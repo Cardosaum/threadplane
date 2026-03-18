@@ -9,22 +9,18 @@ use axum::{
     Json,
 };
 use bon::builder;
-use chrono::{DateTime, Utc};
 use core::future::Future;
 use serde::Deserialize;
-use serde_json::{json, Value};
 use tracing::error;
-use uuid::Uuid;
 
 use crate::{
-    app::{AppState, ProjectionCoordinator, WorkspaceGovernanceBootstrap},
     build_info::current_build_info,
-    error::{AppResult, ServerResult, ThreadplaneServerError},
     idempotency::{
         begin_idempotent_command, complete_idempotent_command, CommandExecution,
         IdempotencyContext, IDEMPOTENCY_KEY_HEADER,
     },
     lifecycle::{calculate_claim_expiry, normalized_lease_seconds},
+    prelude::*,
     projections::{
         fetch_entity_relations, project_claim, project_epic, project_link, project_memory,
         project_note, project_task, project_task_dependency_by_id,
@@ -47,9 +43,6 @@ use crate::{
         workspace_supports_priority, MemoryListFilters, NoteListFilters, TaskListFilters, TaskRow,
     },
 };
-use alloc::sync::Arc;
-use neo4rs::Graph;
-use sqlx::PgPool;
 use threadplane_core::{
     health_summary, normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels,
     normalize_task_owner, scope_summary, service_snapshot, ActorPublicKey, AddLinkRequest,
@@ -501,7 +494,11 @@ fn task_next_filters(query: &TaskListQuery) -> TaskListFilters<'_> {
     }
 }
 
-async fn project_task_record(graph: &Graph, pool: &PgPool, record: &TaskRecord) -> ServerResult<()> {
+async fn project_task_record(
+    graph: &Graph,
+    pool: &PgPool,
+    record: &TaskRecord,
+) -> ServerResult<()> {
     project_task_supporting_entities(graph, pool, record).await?;
     project_task(graph, record).await.map_err(|error| {
         error!(?error, task_id = %record.task_id, "failed to project task");
@@ -525,12 +522,10 @@ async fn project_claimed_task_record(
     task_record: &TaskRecord,
 ) -> ServerResult<()> {
     project_task_record(graph, pool, task_record).await?;
-    project_claim(graph, task, claim)
-        .await
-        .map_err(|error| {
-            error!(?error, task_id = %claim.task_id, "failed to project claim");
-            ThreadplaneServerError::internal(error)
-        })
+    project_claim(graph, task, claim).await.map_err(|error| {
+        error!(?error, task_id = %claim.task_id, "failed to project claim");
+        ThreadplaneServerError::internal(error)
+    })
 }
 
 fn build_xanadu_request_payload(request: &CreateXanaduLinkRequest) -> Value {
@@ -776,7 +771,8 @@ pub(crate) async fn create_memory(
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
     let normalized_tags = normalize_memory_tags(request.tags.clone());
-    let normalized_recall_triggers = normalize_memory_recall_triggers(request.recall_triggers.clone());
+    let normalized_recall_triggers =
+        normalize_memory_recall_triggers(request.recall_triggers.clone());
     let pending_receipt = match begin_idempotent_command::<MemoryRecord>(
         &mut tx,
         IdempotencyContext {
@@ -1223,7 +1219,11 @@ pub(crate) async fn offer_task(
         .projection_coordinator(state.projection_coordinator())
         .workspace(&record.workspace)
         .event_id(record.event_id)
-        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .operation(Box::pin(project_task_record(
+            state.graph(),
+            state.pool(),
+            &record,
+        )))
         .call()
         .await?;
 
@@ -1478,7 +1478,11 @@ pub(crate) async fn release_task(
         .projection_coordinator(state.projection_coordinator())
         .workspace(&request.workspace)
         .event_id(event_id)
-        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .operation(Box::pin(project_task_record(
+            state.graph(),
+            state.pool(),
+            &record,
+        )))
         .call()
         .await?;
 
@@ -1575,7 +1579,11 @@ pub(crate) async fn complete_task(
         .projection_coordinator(state.projection_coordinator())
         .workspace(&request.workspace)
         .event_id(event_id)
-        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .operation(Box::pin(project_task_record(
+            state.graph(),
+            state.pool(),
+            &record,
+        )))
         .call()
         .await?;
 
@@ -2011,9 +2019,13 @@ pub(crate) async fn list_tasks(
 ) -> AppResult<Vec<TaskListEntry>> {
     ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
-    let rows =
-        fetch_tasks_for_listing(&pool, &workspace, task_selection_filters(&query), Some(limit))
-            .await?;
+    let rows = fetch_tasks_for_listing(
+        &pool,
+        &workspace,
+        task_selection_filters(&query),
+        Some(limit),
+    )
+    .await?;
     let data = build_task_list_entries(&pool, rows).await?;
     Ok(success(data))
 }
