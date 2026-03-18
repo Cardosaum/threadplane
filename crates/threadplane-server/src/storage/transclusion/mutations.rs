@@ -1,18 +1,8 @@
-#![expect(
-    clippy::redundant_pub_crate,
-    reason = "Transclusion persistence is shared only inside this crate."
-)]
-#![allow(
-    clippy::wildcard_imports,
-    reason = "The transclusion submodule intentionally builds on the storage prelude."
-)]
-
 use super::*;
-
-pub(crate) struct XanaduGroup {
-    pub(crate) canonical_group_id: Uuid,
-    pub(crate) merged_group_id: Option<Uuid>,
-}
+use crate::storage::transclusion::{
+    entities::fetch_text_entity_by_ref_tx,
+    groups::{fetch_transclusion_group, group_exists, insert_transclusion_group},
+};
 
 pub(crate) async fn update_transclusion_group(
     tx: &mut Transaction<'_, Postgres>,
@@ -47,17 +37,7 @@ pub(crate) async fn sync_transclusion_members(
     tx: &mut Transaction<'_, Postgres>,
     transclusion_id: Uuid,
 ) -> ServerResult<()> {
-    let group: TransclusionGroupRow = query_as(
-        "
-        SELECT transclusion_id, workspace, title, content, created_at, updated_at
-        FROM transclusion_groups
-        WHERE transclusion_id = $1
-        ",
-    )
-    .bind(transclusion_id)
-    .fetch_optional(&mut **tx)
-    .await?
-    .ok_or_else(|| ThreadplaneServerError::not_found("transclusion group not found"))?;
+    let group = fetch_transclusion_group(tx, transclusion_id).await?;
 
     sqlx::query(
         "
@@ -127,75 +107,6 @@ pub(crate) async fn prepare_xanadu_group(
         canonical_group_id,
         merged_group_id,
     })
-}
-
-async fn fetch_text_entity_by_ref_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    workspace: &str,
-    entity_ref: &str,
-) -> ServerResult<TextEntityRow> {
-    match parse_entity_ref(entity_ref) {
-        Some(EntityRef::Epic(_) | EntityRef::Memory(_)) => {
-            Err(ThreadplaneServerError::bad_request(format!(
-                "non-textual entity refs cannot join xanadu groups: {entity_ref}"
-            )))
-        }
-        Some(EntityRef::Note(note_id)) => Ok(TextEntityRow::Note(
-            fetch_note_by_id_tx(tx, note_id, workspace).await?,
-        )),
-        Some(EntityRef::Task(task_id)) => Ok(TextEntityRow::Task(
-            fetch_task_by_id_tx(tx, task_id, workspace).await?,
-        )),
-        None => Err(ThreadplaneServerError::bad_request(format!(
-            "unsupported entity ref {entity_ref}"
-        ))),
-    }
-}
-
-async fn group_exists(
-    tx: &mut Transaction<'_, Postgres>,
-    transclusion_id: Uuid,
-) -> ServerResult<bool> {
-    let exists: Option<(Uuid,)> =
-        query_as("SELECT transclusion_id FROM transclusion_groups WHERE transclusion_id = $1")
-            .bind(transclusion_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    Ok(exists.is_some())
-}
-
-async fn insert_transclusion_group(
-    tx: &mut Transaction<'_, Postgres>,
-    transclusion_id: Uuid,
-    workspace: &str,
-    actor: &str,
-    title: &str,
-    content: &str,
-    now: DateTime<Utc>,
-) -> ServerResult<()> {
-    sqlx::query(
-        "
-        INSERT INTO transclusion_groups (
-            transclusion_id,
-            workspace,
-            created_by,
-            title,
-            content,
-            created_at,
-            updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $6)
-        ",
-    )
-    .bind(transclusion_id)
-    .bind(workspace)
-    .bind(actor)
-    .bind(title)
-    .bind(content)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
 }
 
 async fn move_group_members(
