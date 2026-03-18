@@ -4,7 +4,6 @@
     reason = "CLI commands are crate-internal and keep explicit visibility and workflow grouping for readability."
 )]
 
-use alloc::collections::BTreeSet;
 use core::time::Duration;
 use std::path::PathBuf;
 
@@ -39,6 +38,7 @@ mod executor;
 pub(crate) mod paths;
 mod reads;
 pub(crate) mod render;
+mod task;
 mod workspace;
 
 #[cfg(test)]
@@ -52,6 +52,20 @@ pub(crate) use executor::execute;
 pub(crate) use reads::{
     EntityCommand, EntitySubcommand, EventsCommand, EventsSubcommand, RelatedEntities, ShowEntity,
     TailEvents,
+};
+#[expect(
+    unused_imports,
+    reason = "The command module re-exports selected task types as the import seam for sibling modules and tests."
+)]
+pub(crate) use task::{
+    apply_metadata_patch, dedup_task_ids, normalize_priority_name, parse_task_priority_input,
+    select_dependency_view_from_context, select_dependency_view_from_dag, task_metadata_changed,
+    task_metadata_from_args, triage_has_changes, triage_summary_labels, triage_summary_owner,
+    AddTaskDependency, ClaimNextTask, ClaimTask, CompleteTask, ListTasks, NextTask, OfferTask,
+    ReleaseTask, ShowTask, TaskCommand, TaskContextCommand, TaskDagCommand,
+    TaskDependencyViewCommand, TaskDependencyViewKind, TaskMetadataArgs, TaskMetadataFilterArgs,
+    TaskMetadataPatchArgs, TaskStatusValue, TaskSubcommand, TaskTriageOutcome, TaskTriageSummary,
+    TriageTasks, UpdateTask,
 };
 pub(crate) use workspace::{WorkspaceCommand, WorkspaceSubcommand};
 
@@ -248,378 +262,11 @@ enum ProjectionSubcommand {
     Status,
 }
 
-#[derive(Debug, Args)]
-#[command(about = "Offer, claim, and inspect shared tasks")]
-struct TaskCommand {
-    #[command(subcommand)]
-    command: TaskSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum TaskSubcommand {
-    #[command(about = "Show tasks blocking the selected task")]
-    BlockedBy(TaskDependencyViewCommand),
-    #[command(about = "Show tasks that are blocked by the selected task")]
-    Blocks(TaskDependencyViewCommand),
-    #[command(about = "Claim an open task with a lease")]
-    Claim(ClaimTask),
-    #[command(about = "Claim the next best ready task in the workspace")]
-    ClaimNext(ClaimNextTask),
-    #[command(about = "Mark a task complete and release any active claim")]
-    Complete(CompleteTask),
-    #[command(about = "Fetch a task plus graph-backed related context")]
-    Context(TaskContextCommand),
-    #[command(about = "Show the task dependency DAG around a task")]
-    Dag(TaskDagCommand),
-    #[command(about = "Declare that one task depends on another")]
-    Depend(AddTaskDependency),
-    #[command(about = "List tasks with workflow filters")]
-    List(ListTasks),
-    #[command(about = "Show the next best ready task in the workspace")]
-    Next(NextTask),
-    #[command(about = "Offer a new task into a workspace")]
-    Offer(OfferTask),
-    #[command(about = "Release an active claim and return the task to the pool")]
-    Release(ReleaseTask),
-    #[command(about = "Fetch a task by ID without graph context")]
-    Show(ShowTask),
-    #[command(about = "Apply the same epic assignment and/or completion to multiple tasks")]
-    Triage(TriageTasks),
-    #[command(about = "Update a task and propagate through Xanadu links when present")]
-    Update(UpdateTask),
-}
-
-#[derive(Debug, Args)]
-struct ClaimTask {
-    #[arg(long, help = "Actor claiming the task")]
-    actor: String,
-
-    #[arg(long, help = "Lease duration in seconds")]
-    lease_seconds: Option<i64>,
-
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ClaimNextTask {
-    #[arg(long, help = "Actor claiming the task")]
-    actor: String,
-
-    #[arg(long, help = "Optional epic filter")]
-    epic_id: Option<Uuid>,
-
-    #[arg(long, help = "Durable label filter")]
-    label: Option<String>,
-
-    #[arg(long, help = "Lease duration in seconds")]
-    lease_seconds: Option<i64>,
-
-    #[command(flatten)]
-    metadata_filters: TaskMetadataFilterArgs,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct TaskDependencyViewCommand {
-    #[arg(
-        long,
-        help = "Only return direct relationships instead of the transitive chain"
-    )]
-    direct_only: bool,
-
-    #[arg(
-        long,
-        default_value = "compact",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-struct CompleteTask {
-    #[arg(long, help = "Actor completing the task")]
-    actor: String,
-
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct TaskContextCommand {
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-struct TaskDagCommand {
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum TaskStatusValue {
-    Claimed,
-    Completed,
-    Open,
-}
-
-impl TaskStatusValue {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Claimed => "claimed",
-            Self::Completed => "completed",
-        }
-    }
-}
-
-#[derive(Debug, Args)]
-struct AddTaskDependency {
-    #[arg(long, help = "Actor adding the dependency edge")]
-    actor: String,
-
-    #[arg(long, help = "Task UUID that must complete first")]
-    depends_on: Uuid,
-
-    #[arg(long, help = "Task UUID that will wait")]
-    task_id: Uuid,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ListTasks {
-    #[arg(long, help = "Optional epic filter")]
-    epic_id: Option<Uuid>,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Only include tasks with the selected normalized label")]
-    label: Option<String>,
-
-    #[arg(long, help = "Maximum number of tasks to return")]
-    limit: Option<i64>,
-
-    #[command(flatten)]
-    metadata_filters: TaskMetadataFilterArgs,
-
-    #[arg(long, help = "Only include tasks whose dependencies are all completed")]
-    ready_only: bool,
-
-    #[arg(long, help = "Optional workflow status filter")]
-    status: Option<TaskStatusValue>,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
 pub(crate) enum OutputFormat {
     Compact,
     #[default]
     Json,
-}
-
-#[derive(Debug, Args)]
-struct NextTask {
-    #[arg(long, help = "Optional epic filter")]
-    epic_id: Option<Uuid>,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Durable label filter")]
-    label: Option<String>,
-
-    #[command(flatten)]
-    metadata_filters: TaskMetadataFilterArgs,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args, Clone)]
-struct TaskMetadataArgs {
-    #[arg(long, help = "Durable label. Repeat for multiple labels")]
-    label: Vec<String>,
-
-    #[arg(long, help = "Durable owner, distinct from the temporary claim actor")]
-    owner: Option<String>,
-
-    #[arg(long, help = "Priority used for backlog sorting and filtering")]
-    priority: Option<String>,
-}
-
-#[derive(Debug, Args, Clone, Default)]
-struct TaskMetadataFilterArgs {
-    #[arg(long, help = "Only include tasks owned by this durable owner")]
-    owner: Option<String>,
-
-    #[arg(long, help = "Only include tasks with this priority")]
-    priority: Option<String>,
-}
-
-#[derive(Debug, Args, Clone, Default)]
-pub(crate) struct TaskMetadataPatchArgs {
-    #[arg(long, help = "Clear all durable labels")]
-    pub(crate) clear_labels: bool,
-
-    #[arg(long, help = "Clear any durable owner")]
-    pub(crate) clear_owner: bool,
-
-    #[arg(
-        long,
-        help = "Replace labels with this set. Repeat for multiple labels"
-    )]
-    pub(crate) label: Vec<String>,
-
-    #[arg(long, help = "Replace the durable owner")]
-    pub(crate) owner: Option<String>,
-
-    #[arg(long, help = "Replace the task priority")]
-    pub(crate) priority: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct OfferTask {
-    #[arg(long, help = "Task author")]
-    author: String,
-
-    #[arg(long, help = "Dependency task UUID. Repeat for multiple dependencies")]
-    depends_on: Vec<Uuid>,
-
-    #[arg(long, help = "Task details")]
-    details: String,
-
-    #[arg(long, help = "Optional epic UUID to attach this task to")]
-    epic_id: Option<Uuid>,
-
-    #[command(flatten)]
-    metadata: TaskMetadataArgs,
-
-    #[arg(long, help = "Task title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ReleaseTask {
-    #[arg(long, help = "Actor releasing the task")]
-    actor: String,
-
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ShowTask {
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-struct TriageTasks {
-    #[arg(long, help = "Actor performing the triage")]
-    actor: String,
-
-    #[arg(
-        long,
-        help = "Mark every listed task completed after any metadata updates"
-    )]
-    complete: bool,
-
-    #[arg(long, help = "Optional epic UUID to assign to every listed task")]
-    epic_id: Option<Uuid>,
-
-    #[command(flatten)]
-    metadata: TaskMetadataPatchArgs,
-
-    #[arg(
-        long,
-        help = "Task UUID to triage. Repeat for multiple tasks",
-        num_args = 1..,
-        required = true
-    )]
-    task_id: Vec<Uuid>,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct UpdateTask {
-    #[arg(long, help = "Actor performing the update")]
-    actor: String,
-
-    #[arg(long, help = "Updated task details")]
-    details: String,
-
-    #[arg(
-        long,
-        help = "Optional epic UUID. When provided, the task is attached to that epic"
-    )]
-    epic_id: Option<Uuid>,
-
-    #[command(flatten)]
-    metadata: TaskMetadataArgs,
-
-    #[arg(long, help = "Task UUID")]
-    task_id: Uuid,
-
-    #[arg(long, help = "Updated task title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Serialize)]
-struct TaskTriageSummary {
-    clear_labels: bool,
-    clear_owner: bool,
-    completed_task_ids: Vec<Uuid>,
-    epic_id: Option<Uuid>,
-    labels: Option<Vec<String>>,
-    owner: Option<String>,
-    priority: Option<TaskPriority>,
-    task_ids: Vec<Uuid>,
-    unchanged_task_ids: Vec<Uuid>,
-    updated_task_ids: Vec<Uuid>,
-    workspace: String,
-}
-
-#[derive(Debug, Default)]
-struct TaskTriageOutcome {
-    changed: bool,
-    completed: bool,
-    updated: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -632,12 +279,6 @@ pub(crate) struct MemoryListPathArgs<'input> {
     pub(crate) recall_trigger: Option<&'input str>,
     pub(crate) tag: Option<&'input str>,
     pub(crate) workspace: &'input str,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TaskDependencyViewKind {
-    BlockedBy,
-    Blocks,
 }
 
 pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<String> {
@@ -660,19 +301,6 @@ pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<Str
         comparison.server.git_commit.as_deref().unwrap_or("unknown"),
         changed_fields,
     ))
-}
-
-fn parse_task_priority_input(input: &str) -> Result<TaskPriority> {
-    TaskPriority::new(input).ok_or_else(|| {
-        Usage {
-            message: "priority cannot be empty".to_owned(),
-        }
-        .build()
-    })
-}
-
-fn normalize_priority_name(input: &str) -> Result<String> {
-    Ok(parse_task_priority_input(input)?.to_string())
 }
 
 fn parse_memory_kind_input(input: &str) -> Result<MemoryKind> {
@@ -787,117 +415,4 @@ fn parse_workspace_priority_spec(input: &str) -> Result<WorkspacePriority> {
         name: normalize_priority_name(raw_name)?,
         rank,
     })
-}
-
-fn select_dependency_view_from_context(
-    context: &TaskContext,
-    kind: TaskDependencyViewKind,
-) -> &[TaskDependencySummary] {
-    match kind {
-        TaskDependencyViewKind::BlockedBy => &context.dependencies,
-        TaskDependencyViewKind::Blocks => &context.dependents,
-    }
-}
-
-fn select_dependency_view_from_dag(
-    dag: &TaskDag,
-    kind: TaskDependencyViewKind,
-) -> &[TaskDependencySummary] {
-    match kind {
-        TaskDependencyViewKind::BlockedBy => &dag.dependencies,
-        TaskDependencyViewKind::Blocks => &dag.dependents,
-    }
-}
-
-pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
-    task_ids
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn task_metadata_from_args(
-    metadata: TaskMetadataArgs,
-    workspace_policy: &WorkspacePolicy,
-) -> Result<TaskMetadata> {
-    let priority = metadata
-        .priority
-        .as_deref()
-        .map(parse_task_priority_input)
-        .transpose()?
-        .or_else(|| workspace_policy.priorities.default_task_priority())
-        .ok_or_else(|| {
-            Usage {
-                message: "workspace policy does not define a usable default priority".to_owned(),
-            }
-            .build()
-        })?;
-
-    Ok(TaskMetadata {
-        labels: normalize_task_labels(metadata.label),
-        owner: normalize_task_owner(metadata.owner),
-        priority,
-    })
-}
-
-fn apply_metadata_patch(
-    current: &TaskMetadata,
-    patch: &TaskMetadataPatchArgs,
-) -> Result<TaskMetadata> {
-    let labels = if patch.clear_labels {
-        Vec::new()
-    } else if patch.label.is_empty() {
-        current.labels.clone()
-    } else {
-        normalize_task_labels(patch.label.clone())
-    };
-    let owner = if patch.clear_owner {
-        None
-    } else if patch.owner.is_some() {
-        normalize_task_owner(patch.owner.clone())
-    } else {
-        current.owner.clone()
-    };
-
-    Ok(TaskMetadata {
-        labels,
-        owner,
-        priority: patch
-            .priority
-            .as_deref()
-            .map(parse_task_priority_input)
-            .transpose()?
-            .unwrap_or_else(|| current.priority.clone()),
-    })
-}
-
-fn task_metadata_changed(current: &TaskMetadata, next: &TaskMetadata) -> bool {
-    current != next
-}
-
-fn triage_summary_labels(metadata: &TaskMetadataPatchArgs) -> Option<Vec<String>> {
-    if metadata.clear_labels {
-        return Some(Vec::new());
-    }
-    (!metadata.label.is_empty()).then(|| normalize_task_labels(metadata.label.clone()))
-}
-
-fn triage_summary_owner(metadata: &TaskMetadataPatchArgs) -> Option<String> {
-    normalize_task_owner(metadata.owner.clone())
-}
-
-pub(crate) fn triage_has_changes(
-    complete: bool,
-    epic_id: Option<Uuid>,
-    metadata: &TaskMetadataPatchArgs,
-) -> bool {
-    complete
-        || epic_id.is_some()
-        || metadata.priority.is_some()
-        || metadata.clear_owner
-        || metadata.owner.is_some()
-        || metadata.clear_labels
-        || !metadata.label.is_empty()
 }
