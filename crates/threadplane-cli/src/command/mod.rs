@@ -37,6 +37,7 @@ use crate::{
 mod content;
 mod executor;
 pub(crate) mod paths;
+mod reads;
 pub(crate) mod render;
 mod workspace;
 
@@ -48,6 +49,10 @@ pub(crate) use content::{
     PrimeMemories, SearchNotes,
 };
 pub(crate) use executor::execute;
+pub(crate) use reads::{
+    EntityCommand, EntitySubcommand, EventsCommand, EventsSubcommand, RelatedEntities, ShowEntity,
+    TailEvents,
+};
 pub(crate) use workspace::{WorkspaceCommand, WorkspaceSubcommand};
 
 #[derive(Debug, Parser)]
@@ -108,47 +113,6 @@ enum Command {
     Scope,
     Task(TaskCommand),
     Workspace(WorkspaceCommand),
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Explore entities and their graph-linked relations")]
-struct EntityCommand {
-    #[command(subcommand)]
-    command: EntitySubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum EntitySubcommand {
-    #[command(about = "List entities related to the selected entity")]
-    Related(RelatedEntities),
-    #[command(about = "Fetch an entity and its related graph neighborhood")]
-    Show(ShowEntity),
-}
-
-#[derive(Debug, Args)]
-struct ShowEntity {
-    #[arg(long, help = "Entity ref, for example task:<uuid> or note:<uuid>")]
-    entity_ref: String,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-}
-
-#[derive(Debug, Args)]
-struct RelatedEntities {
-    #[arg(long, help = "Entity ref, for example task:<uuid> or note:<uuid>")]
-    entity_ref: String,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
 }
 
 #[derive(Debug, Args)]
@@ -221,74 +185,6 @@ struct ConfigCommand {
 enum ConfigSubcommand {
     #[command(about = "Print the resolved config and where threadplane looks for it")]
     Show,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Inspect workspace event history")]
-struct EventsCommand {
-    #[command(subcommand)]
-    command: EventsSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum EventsSubcommand {
-    #[command(about = "List recent events for a workspace")]
-    List(ListEvents),
-    #[command(about = "Read workspace events incrementally and optionally follow for new changes")]
-    Tail(TailEvents),
-}
-
-#[derive(Debug, Args)]
-struct ListEvents {
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(
-        long,
-        default_value_t = 25,
-        help = "Maximum number of events to return"
-    )]
-    limit: i64,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct TailEvents {
-    #[arg(long, help = "Resume after this event UUID")]
-    after_event_id: Option<Uuid>,
-
-    #[arg(long, help = "Keep polling for new events")]
-    follow: bool,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(
-        long,
-        default_value_t = 25,
-        help = "Maximum number of events to return per poll"
-    )]
-    limit: i64,
-
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Seconds to wait between follow polls"
-    )]
-    poll_seconds: u64,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
 }
 
 #[derive(Debug, Args)]
