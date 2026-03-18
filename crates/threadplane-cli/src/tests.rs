@@ -8,9 +8,6 @@ use proptest::proptest;
 use snafu::IntoError as _;
 use uuid::Uuid;
 
-use crate::command::{
-    build_mismatch_warning, dedup_task_ids, triage_has_changes, MemoryListPathArgs,
-};
 use crate::command::paths::{
     entity_relations_path, entity_show_path, events_list_path, events_tail_path, memory_list_path,
     note_list_path,
@@ -19,6 +16,9 @@ use crate::command::render::{
     render_entity_context_compact, render_event_list_compact, render_graph_relations_compact,
     render_memory_list_compact, render_note_list_compact, render_task_dependency_compact,
     render_task_list_compact,
+};
+use crate::command::{
+    build_mismatch_warning, dedup_task_ids, triage_has_changes, MemoryListPathArgs,
 };
 use crate::error::{ContractMismatchDetails, JsonContractMismatch};
 use threadplane_core::{

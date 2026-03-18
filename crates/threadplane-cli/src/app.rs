@@ -77,5 +77,10 @@ pub(crate) fn run() -> Result<()> {
         .sleeper(&sleeper)
         .build();
 
-    execute(cli, &loaded_config.config, &loaded_config.discovery, &mut context)
+    execute(
+        cli,
+        &loaded_config.config,
+        &loaded_config.discovery,
+        &mut context,
+    )
 }

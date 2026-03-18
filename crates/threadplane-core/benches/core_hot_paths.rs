@@ -2,9 +2,9 @@ use core::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use threadplane_core::{
-    normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels, parse_entity_ref,
-    relation_type, validate_workspace_policy, PublicKeyAlgorithm, WorkspaceAuthPolicy,
-    WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy,
+    normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels,
+    parse_entity_ref, relation_type, validate_workspace_policy, PublicKeyAlgorithm,
+    WorkspaceAuthPolicy, WorkspacePolicy, WorkspacePriority, WorkspacePriorityPolicy,
 };
 
 fn bench_normalize_task_labels(criterion: &mut Criterion) {
@@ -13,9 +13,13 @@ fn bench_normalize_task_labels(criterion: &mut Criterion) {
         let labels: Vec<_> = (0..size)
             .map(|index| format!("  Label {}  ", index % 8))
             .collect();
-        group.bench_with_input(BenchmarkId::from_parameter(size), &labels, |bencher, input| {
-            bencher.iter(|| normalize_task_labels(black_box(input.clone())));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &labels,
+            |bencher, input| {
+                bencher.iter(|| normalize_task_labels(black_box(input.clone())));
+            },
+        );
     }
     group.finish();
 }
@@ -26,9 +30,13 @@ fn bench_normalize_memory_tags(criterion: &mut Criterion) {
         let tags: Vec<_> = (0..size)
             .map(|index| format!("  Prime {}  ", index % 8))
             .collect();
-        group.bench_with_input(BenchmarkId::from_parameter(size), &tags, |bencher, input| {
-            bencher.iter(|| normalize_memory_tags(black_box(input.clone())));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &tags,
+            |bencher, input| {
+                bencher.iter(|| normalize_memory_tags(black_box(input.clone())));
+            },
+        );
     }
     group.finish();
 }

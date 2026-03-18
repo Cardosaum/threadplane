@@ -1,5 +1,5 @@
-use proptest::{prop_assert, prop_assert_eq};
 use proptest::proptest;
+use proptest::{prop_assert, prop_assert_eq};
 use rstest::rstest;
 use threadplane_core::build_info;
 
