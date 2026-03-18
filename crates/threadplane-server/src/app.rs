@@ -12,6 +12,7 @@ use core::future::Future;
 use core::net::SocketAddr;
 
 use axum::{
+    extract::FromRef,
     routing::{get, post},
     serve, Router,
 };
@@ -75,6 +76,10 @@ impl AppState {
         self.dependencies.pool()
     }
 
+    pub(crate) const fn projection_coordinator(&self) -> &ProjectionCoordinator {
+        &self.projection_coordinator
+    }
+
     pub(crate) async fn shutdown(&self) {
         self.dependencies.shutdown().await;
     }
@@ -87,6 +92,34 @@ impl AppState {
         Operation: Future<Output = ServerResult<T>>,
     {
         self.projection_coordinator.run(operation).await
+    }
+}
+
+impl FromRef<AppState> for Arc<Graph> {
+    #[inline]
+    fn from_ref(input: &AppState) -> Self {
+        Self::clone(&input.dependencies.graph)
+    }
+}
+
+impl FromRef<AppState> for PgPool {
+    #[inline]
+    fn from_ref(input: &AppState) -> Self {
+        input.dependencies.pool.clone()
+    }
+}
+
+impl FromRef<AppState> for ProjectionCoordinator {
+    #[inline]
+    fn from_ref(input: &AppState) -> Self {
+        input.projection_coordinator.clone()
+    }
+}
+
+impl FromRef<AppState> for WorkspaceGovernanceBootstrap {
+    #[inline]
+    fn from_ref(input: &AppState) -> Self {
+        input.bootstrap.clone()
     }
 }
 

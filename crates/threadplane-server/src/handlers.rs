@@ -16,7 +16,7 @@ use tracing::error;
 use uuid::Uuid;
 
 use crate::{
-    app::AppState,
+    app::{AppState, ProjectionCoordinator, WorkspaceGovernanceBootstrap},
     build_info::current_build_info,
     error::{AppResult, ServerResult, ThreadplaneServerError},
     idempotency::{
@@ -46,6 +46,9 @@ use crate::{
         workspace_supports_priority, MemoryListFilters, NoteListFilters, TaskListFilters, TaskRow,
     },
 };
+use alloc::sync::Arc;
+use neo4rs::Graph;
+use sqlx::PgPool;
 use threadplane_core::{
     health_summary, normalize_memory_recall_triggers, normalize_memory_tags, normalize_task_labels,
     normalize_task_owner, scope_summary, service_snapshot, ActorPublicKey, AddLinkRequest,
@@ -63,8 +66,23 @@ const DEFAULT_LIST_LIMIT: i64 = 25;
 const MAX_LIST_LIMIT: i64 = 200;
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct EntityPath {
+    entity_ref: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct EpicPath {
+    epic_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct ListQuery {
     limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct MemoryPath {
+    memory_id: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +96,11 @@ pub(crate) struct NoteListQuery {
     author: Option<String>,
     limit: Option<i64>,
     query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NotePath {
+    note_id: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,8 +126,18 @@ pub(crate) struct TaskListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub(crate) struct TaskPath {
+    task_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
 pub(crate) struct WorkspaceKeysQuery {
     actor_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WorkspacePath {
+    workspace: String,
 }
 
 fn with_projection_status(
@@ -151,20 +184,22 @@ fn idempotency_key(headers: &HeaderMap) -> ServerResult<Option<&str>> {
 }
 
 async fn ensure_workspace_policy(
-    state: &AppState,
+    pool: &PgPool,
+    bootstrap: &WorkspaceGovernanceBootstrap,
     workspace: &str,
 ) -> ServerResult<WorkspacePolicy> {
-    ensure_workspace_governance(state.pool(), workspace, state.bootstrap()).await
+    ensure_workspace_governance(pool, workspace, bootstrap).await
 }
 
 async fn require_workspace_editor(
-    state: &AppState,
+    pool: &PgPool,
+    bootstrap: &WorkspaceGovernanceBootstrap,
     workspace: &str,
     actor: &str,
 ) -> ServerResult<WorkspaceRole> {
-    ensure_workspace_policy(state, workspace).await?;
+    ensure_workspace_policy(pool, bootstrap, workspace).await?;
     require_workspace_role(
-        state.pool(),
+        pool,
         workspace,
         actor,
         WorkspaceRole::can_edit,
@@ -174,13 +209,14 @@ async fn require_workspace_editor(
 }
 
 async fn require_workspace_admin(
-    state: &AppState,
+    pool: &PgPool,
+    bootstrap: &WorkspaceGovernanceBootstrap,
     workspace: &str,
     actor: &str,
 ) -> ServerResult<WorkspaceRole> {
-    ensure_workspace_policy(state, workspace).await?;
+    ensure_workspace_policy(pool, bootstrap, workspace).await?;
     require_workspace_role(
-        state.pool(),
+        pool,
         workspace,
         actor,
         WorkspaceRole::can_administer,
@@ -190,12 +226,13 @@ async fn require_workspace_admin(
 }
 
 async fn ensure_supported_task_priority(
-    state: &AppState,
+    pool: &PgPool,
+    bootstrap: &WorkspaceGovernanceBootstrap,
     workspace: &str,
     priority: &TaskPriority,
 ) -> ServerResult<()> {
-    ensure_workspace_policy(state, workspace).await?;
-    if workspace_supports_priority(state.pool(), workspace, priority).await? {
+    ensure_workspace_policy(pool, bootstrap, workspace).await?;
+    if workspace_supports_priority(pool, workspace, priority).await? {
         return Ok(());
     }
 
@@ -271,20 +308,78 @@ async fn persist_task_update(
     Ok(None)
 }
 
+async fn persist_offered_task(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    request: &OfferTaskRequest,
+    task_id: Uuid,
+    event_id: Uuid,
+    created_at: DateTime<Utc>,
+) -> ServerResult<()> {
+    sqlx::query(
+        "
+        INSERT INTO tasks (
+            task_id,
+            event_id,
+            workspace,
+            author,
+            title,
+            details,
+            status,
+            epic_id,
+            priority,
+            owner,
+            labels,
+            transclusion_id,
+            created_at,
+            updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, NULL, $11, $11)
+        ",
+    )
+    .bind(task_id)
+    .bind(event_id)
+    .bind(&request.workspace)
+    .bind(&request.author)
+    .bind(&request.title)
+    .bind(&request.details)
+    .bind(request.epic_id)
+    .bind(request.metadata.priority.to_string())
+    .bind(request.metadata.owner.clone())
+    .bind(request.metadata.labels.clone())
+    .bind(created_at)
+    .execute(&mut **tx)
+    .await?;
+
+    for dependency_id in unique_task_ids(&request.depends_on) {
+        append_task_dependency(
+            tx,
+            &request.workspace,
+            &request.author,
+            task_id,
+            dependency_id,
+            created_at,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
 async fn advance_graph_projection_cursor(
-    state: &AppState,
+    pool: &PgPool,
     workspace: &str,
     event_id: Uuid,
 ) -> ServerResult<()> {
-    let event = fetch_event_row_for_workspace(state.pool(), workspace, event_id).await?;
-    let mut tx = state.pool().begin().await?;
+    let event = fetch_event_row_for_workspace(pool, workspace, event_id).await?;
+    let mut tx = pool.begin().await?;
     record_projection_cursor(&mut tx, GRAPH_PROJECTION_NAME, event.cursor(), Utc::now()).await?;
     tx.commit().await?;
     Ok(())
 }
 
 async fn project_graph_event<Output, Operation>(
-    state: &AppState,
+    pool: &PgPool,
+    projection_coordinator: &ProjectionCoordinator,
     workspace: &str,
     event_id: Uuid,
     operation: Operation,
@@ -292,8 +387,8 @@ async fn project_graph_event<Output, Operation>(
 where
     Operation: Future<Output = ServerResult<Output>>,
 {
-    let output = state.serialize_graph_projection(operation).await?;
-    advance_graph_projection_cursor(state, workspace, event_id).await?;
+    let output = projection_coordinator.run(operation).await?;
+    advance_graph_projection_cursor(pool, workspace, event_id).await?;
     Ok(output)
 }
 
@@ -399,35 +494,28 @@ fn task_next_filters(query: &TaskListQuery) -> TaskListFilters<'_> {
     }
 }
 
-async fn project_task_record(state: &AppState, record: &TaskRecord) -> ServerResult<()> {
-    project_task_supporting_entities(state, record).await?;
-    project_task(state.graph(), record).await.map_err(|error| {
+async fn project_task_record(graph: &Graph, pool: &PgPool, record: &TaskRecord) -> ServerResult<()> {
+    project_task_supporting_entities(graph, pool, record).await?;
+    project_task(graph, record).await.map_err(|error| {
         error!(?error, task_id = %record.task_id, "failed to project task");
         ThreadplaneServerError::internal(error)
     })
 }
 
 async fn project_claimed_task_record(
-    state: &AppState,
+    graph: &Graph,
+    pool: &PgPool,
     task: &TaskRow,
     task_record: &TaskRecord,
     claim: &TaskClaimRecord,
 ) -> ServerResult<()> {
-    project_task_record(state, task_record).await?;
-    project_claim(state.graph(), task, claim)
+    project_task_record(graph, pool, task_record).await?;
+    project_claim(graph, task, claim)
         .await
         .map_err(|error| {
             error!(?error, task_id = %claim.task_id, "failed to project claim");
             ThreadplaneServerError::internal(error)
         })
-}
-
-async fn build_task_list_entry(
-    state: &AppState,
-    task: TaskRow,
-) -> ServerResult<Option<TaskListEntry>> {
-    let mut entries = build_task_list_entries(state.pool(), vec![task]).await?;
-    Ok(entries.pop())
 }
 
 fn build_xanadu_request_payload(request: &CreateXanaduLinkRequest) -> Value {
@@ -456,30 +544,79 @@ fn build_xanadu_event_payload(
     })
 }
 
+async fn persist_xanadu_link(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    request: &CreateXanaduLinkRequest,
+    event_id: Uuid,
+    canonical_group_id: Uuid,
+    created_at: DateTime<Utc>,
+) -> ServerResult<LinkRecord> {
+    let link_id = Uuid::new_v4();
+    sqlx::query(
+        "
+        INSERT INTO links (
+            link_id,
+            event_id,
+            workspace,
+            actor,
+            from_entity_ref,
+            to_entity_ref,
+            relation,
+            is_xanadu,
+            transclusion_id,
+            created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)
+        ",
+    )
+    .bind(link_id)
+    .bind(event_id)
+    .bind(&request.workspace)
+    .bind(&request.actor)
+    .bind(&request.from)
+    .bind(&request.to)
+    .bind(XANADU_RELATION)
+    .bind(canonical_group_id)
+    .bind(created_at)
+    .execute(&mut **tx)
+    .await?;
+
+    Ok(LinkRecord {
+        link_id,
+        event_id,
+        workspace: request.workspace.clone(),
+        actor: request.actor.clone(),
+        from: request.from.clone(),
+        to: request.to.clone(),
+        relation: XANADU_RELATION.to_owned(),
+        is_xanadu: true,
+        transclusion_id: Some(canonical_group_id),
+        created_at: created_at.to_rfc3339(),
+    })
+}
+
 pub(crate) async fn root() -> Json<ServiceSnapshot> {
     Json(service_snapshot(current_build_info()))
 }
 
-pub(crate) async fn healthz(State(state): State<AppState>) -> ServerResult<Json<Value>> {
-    let projection = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+pub(crate) async fn healthz(State(pool): State<PgPool>) -> ServerResult<Json<Value>> {
+    let projection = fetch_projection_status(&pool, GRAPH_PROJECTION_NAME).await?;
     Ok(Json(with_projection_status(
         health_summary(&current_build_info()),
         projection,
     )?))
 }
 
-pub(crate) async fn scope(State(state): State<AppState>) -> ServerResult<Json<Value>> {
-    let projection = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+pub(crate) async fn scope(State(pool): State<PgPool>) -> ServerResult<Json<Value>> {
+    let projection = fetch_projection_status(&pool, GRAPH_PROJECTION_NAME).await?;
     Ok(Json(with_projection_status(
         scope_summary(&current_build_info()),
         projection,
     )?))
 }
 
-pub(crate) async fn projection_status(
-    State(state): State<AppState>,
-) -> AppResult<ProjectionStatus> {
-    let data = fetch_projection_status(state.pool(), GRAPH_PROJECTION_NAME).await?;
+pub(crate) async fn projection_status(State(pool): State<PgPool>) -> AppResult<ProjectionStatus> {
+    let data = fetch_projection_status(&pool, GRAPH_PROJECTION_NAME).await?;
     Ok(success(data))
 }
 
@@ -488,7 +625,8 @@ pub(crate) async fn create_epic(
     headers: HeaderMap,
     Json(request): Json<CreateEpicRequest>,
 ) -> AppResult<EpicRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.author).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let epic_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -551,7 +689,8 @@ pub(crate) async fn create_epic(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(async {
@@ -566,19 +705,20 @@ pub(crate) async fn create_epic(
 }
 
 pub(crate) async fn show_epic(
-    State(state): State<AppState>,
-    Path(epic_id): Path<Uuid>,
+    State(pool): State<PgPool>,
+    Path(EpicPath { epic_id }): Path<EpicPath>,
 ) -> AppResult<EpicRecord> {
-    let row = fetch_epic_by_id(state.pool(), epic_id).await?;
+    let row = fetch_epic_by_id(&pool, epic_id).await?;
     Ok(success(EpicRecord::from(row)))
 }
 
 pub(crate) async fn show_entity(
-    State(state): State<AppState>,
-    Path(entity_ref): Path<String>,
+    State(graph): State<Arc<Graph>>,
+    State(pool): State<PgPool>,
+    Path(EntityPath { entity_ref }): Path<EntityPath>,
 ) -> AppResult<EntityContext> {
-    let entity = fetch_entity_record(state.pool(), &entity_ref).await?;
-    let relations = fetch_entity_relations(state.graph(), &entity_ref)
+    let entity = fetch_entity_record(&pool, &entity_ref).await?;
+    let relations = fetch_entity_relations(graph.as_ref(), &entity_ref)
         .await
         .map_err(ThreadplaneServerError::internal)?;
 
@@ -586,11 +726,12 @@ pub(crate) async fn show_entity(
 }
 
 pub(crate) async fn related_entities(
-    State(state): State<AppState>,
-    Path(entity_ref): Path<String>,
+    State(graph): State<Arc<Graph>>,
+    State(pool): State<PgPool>,
+    Path(EntityPath { entity_ref }): Path<EntityPath>,
 ) -> AppResult<Vec<threadplane_core::GraphRelation>> {
-    let _entity = fetch_entity_record(state.pool(), &entity_ref).await?;
-    let relations = fetch_entity_relations(state.graph(), &entity_ref)
+    let _entity = fetch_entity_record(&pool, &entity_ref).await?;
+    let relations = fetch_entity_relations(graph.as_ref(), &entity_ref)
         .await
         .map_err(ThreadplaneServerError::internal)?;
 
@@ -602,7 +743,8 @@ pub(crate) async fn create_memory(
     headers: HeaderMap,
     Json(request): Json<CreateMemoryRequest>,
 ) -> AppResult<MemoryRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.author).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let memory_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -682,7 +824,8 @@ pub(crate) async fn create_memory(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(async {
@@ -700,22 +843,23 @@ pub(crate) async fn create_memory(
 }
 
 pub(crate) async fn show_memory(
-    State(state): State<AppState>,
-    Path(memory_id): Path<Uuid>,
+    State(pool): State<PgPool>,
+    Path(MemoryPath { memory_id }): Path<MemoryPath>,
 ) -> AppResult<MemoryRecord> {
-    let row = fetch_memory_by_id(state.pool(), memory_id).await?;
+    let row = fetch_memory_by_id(&pool, memory_id).await?;
     Ok(success(MemoryRecord::try_from(row)?))
 }
 
 pub(crate) async fn list_memories(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<MemoryListQuery>,
 ) -> AppResult<Vec<MemoryRecord>> {
-    ensure_workspace_policy(&state, &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_memories_for_listing(
-        state.pool(),
+        &pool,
         &workspace,
         MemoryListFilters {
             audience: query.audience,
@@ -736,14 +880,15 @@ pub(crate) async fn list_memories(
 }
 
 pub(crate) async fn prime_memories(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<MemoryListQuery>,
 ) -> AppResult<Vec<MemoryRecord>> {
-    ensure_workspace_policy(&state, &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_memories_for_listing(
-        state.pool(),
+        &pool,
         &workspace,
         MemoryListFilters {
             audience: Some(query.audience.unwrap_or(MemoryAudience::Agent)),
@@ -768,7 +913,8 @@ pub(crate) async fn create_note(
     headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> AppResult<NoteRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.author).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let note_id = Uuid::new_v4();
     let created_at = Utc::now();
@@ -832,7 +978,8 @@ pub(crate) async fn create_note(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(async {
@@ -848,22 +995,23 @@ pub(crate) async fn create_note(
 }
 
 pub(crate) async fn show_note(
-    State(state): State<AppState>,
-    Path(note_id): Path<Uuid>,
+    State(pool): State<PgPool>,
+    Path(NotePath { note_id }): Path<NotePath>,
 ) -> AppResult<NoteRecord> {
-    let row = fetch_note_by_id(state.pool(), note_id).await?;
+    let row = fetch_note_by_id(&pool, note_id).await?;
     Ok(success(NoteRecord::from(row)))
 }
 
 pub(crate) async fn list_notes(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<NoteListQuery>,
 ) -> AppResult<Vec<NoteRecord>> {
-    ensure_workspace_policy(&state, &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
     let rows = fetch_notes_for_listing(
-        state.pool(),
+        &pool,
         &workspace,
         NoteListFilters {
             author: query.author.as_deref(),
@@ -881,7 +1029,8 @@ pub(crate) async fn update_note(
     headers: HeaderMap,
     Json(request): Json<UpdateNoteRequest>,
 ) -> AppResult<NoteRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -953,12 +1102,13 @@ pub(crate) async fn update_note(
     tx.commit().await?;
 
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &request.workspace,
         event_id,
         Box::pin(async {
             if let Some(group_id) = transclusion_id {
-                reproject_transclusion_group(&state, group_id, None)
+                reproject_transclusion_group(state.graph(), state.pool(), group_id, None)
                     .await
                     .map_err(ThreadplaneServerError::internal)
             } else {
@@ -979,8 +1129,15 @@ pub(crate) async fn offer_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
-    require_workspace_editor(&state, &request.workspace, &request.author).await?;
-    ensure_supported_task_priority(&state, &request.workspace, &request.metadata.priority).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+        .await?;
+    ensure_supported_task_priority(
+        state.pool(),
+        state.bootstrap(),
+        &request.workspace,
+        &request.metadata.priority,
+    )
+    .await?;
     let mut tx = state.pool().begin().await?;
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
@@ -1016,62 +1173,17 @@ pub(crate) async fn offer_task(
         created_at,
     )
     .await?;
-
-    sqlx::query(
-        "
-        INSERT INTO tasks (
-            task_id,
-            event_id,
-            workspace,
-            author,
-            title,
-            details,
-            status,
-            epic_id,
-            priority,
-            owner,
-            labels,
-            transclusion_id,
-            created_at,
-            updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, 'open', $7, $8, $9, $10, NULL, $11, $11)
-        ",
-    )
-    .bind(task_id)
-    .bind(event_id)
-    .bind(&request.workspace)
-    .bind(&request.author)
-    .bind(&request.title)
-    .bind(&request.details)
-    .bind(request.epic_id)
-    .bind(request.metadata.priority.to_string())
-    .bind(request.metadata.owner.clone())
-    .bind(request.metadata.labels.clone())
-    .bind(created_at)
-    .execute(&mut *tx)
-    .await?;
-
-    for dependency_id in unique_task_ids(&request.depends_on) {
-        append_task_dependency(
-            &mut tx,
-            &request.workspace,
-            &request.author,
-            task_id,
-            dependency_id,
-            created_at,
-        )
-        .await?;
-    }
+    persist_offered_task(&mut tx, &request, task_id, event_id, created_at).await?;
     let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, task_id, &request.workspace).await?);
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
-        Box::pin(project_task_record(&state, &record)),
+        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
     )
     .await?;
 
@@ -1085,8 +1197,15 @@ pub(crate) async fn update_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
-    ensure_supported_task_priority(&state, &request.workspace, &request.metadata.priority).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
+    ensure_supported_task_priority(
+        state.pool(),
+        state.bootstrap(),
+        &request.workspace,
+        &request.metadata.priority,
+    )
+    .await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1132,18 +1251,19 @@ pub(crate) async fn update_task(
     tx.commit().await?;
 
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &request.workspace,
         event_id,
         Box::pin(async {
             if let Some(group_id) = transclusion_id {
-                reproject_transclusion_group(&state, group_id, None)
+                reproject_transclusion_group(state.graph(), state.pool(), group_id, None)
                     .await
                     .map_err(ThreadplaneServerError::internal)?;
                 return Ok(());
             }
 
-            project_task_record(&state, &record).await
+            project_task_record(state.graph(), state.pool(), &record).await
         }),
     )
     .await?;
@@ -1155,7 +1275,8 @@ pub(crate) async fn claim_task(
     headers: HeaderMap,
     Json(request): Json<ClaimTaskRequest>,
 ) -> AppResult<TaskClaimRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
     let mut tx = state.pool().begin().await?;
@@ -1196,11 +1317,13 @@ pub(crate) async fn claim_task(
     tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(project_claimed_task_record(
-            &state,
+            state.graph(),
+            state.pool(),
             &task,
             &task_record,
             &record,
@@ -1216,7 +1339,8 @@ pub(crate) async fn release_task(
     headers: HeaderMap,
     Json(request): Json<ReleaseTaskRequest>,
 ) -> AppResult<TaskRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let released_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1293,10 +1417,11 @@ pub(crate) async fn release_task(
             .await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &request.workspace,
         event_id,
-        Box::pin(project_task_record(&state, &record)),
+        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
     )
     .await?;
 
@@ -1308,7 +1433,8 @@ pub(crate) async fn complete_task(
     headers: HeaderMap,
     Json(request): Json<CompleteTaskRequest>,
 ) -> AppResult<TaskRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let completed_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1383,10 +1509,11 @@ pub(crate) async fn complete_task(
             .await?;
     tx.commit().await?;
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &request.workspace,
         event_id,
-        Box::pin(project_task_record(&state, &record)),
+        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
     )
     .await?;
 
@@ -1398,7 +1525,8 @@ pub(crate) async fn add_task_dependency(
     headers: HeaderMap,
     Json(request): Json<AddTaskDependencyRequest>,
 ) -> AppResult<Value> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1440,7 +1568,8 @@ pub(crate) async fn add_task_dependency(
     tx.commit().await?;
 
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &request.workspace,
         event_id,
         Box::pin(async {
@@ -1464,7 +1593,8 @@ pub(crate) async fn add_link(
     headers: HeaderMap,
     Json(request): Json<AddLinkRequest>,
 ) -> AppResult<LinkRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1542,7 +1672,8 @@ pub(crate) async fn add_link(
     tx.commit().await?;
 
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(async {
@@ -1562,7 +1693,8 @@ pub(crate) async fn add_xanadu_link(
     headers: HeaderMap,
     Json(request): Json<CreateXanaduLinkRequest>,
 ) -> AppResult<LinkRecord> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
     let request_payload = build_xanadu_request_payload(&request);
@@ -1600,59 +1732,27 @@ pub(crate) async fn add_xanadu_link(
         created_at,
     )
     .await?;
-
-    let link_id = Uuid::new_v4();
-    sqlx::query(
-        "
-        INSERT INTO links (
-            link_id,
-            event_id,
-            workspace,
-            actor,
-            from_entity_ref,
-            to_entity_ref,
-            relation,
-            is_xanadu,
-            transclusion_id,
-            created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, $9)
-        ",
-    )
-    .bind(link_id)
-    .bind(event_id)
-    .bind(&request.workspace)
-    .bind(&request.actor)
-    .bind(&request.from)
-    .bind(&request.to)
-    .bind(XANADU_RELATION)
-    .bind(xanadu_group.canonical_group_id)
-    .bind(created_at)
-    .execute(&mut *tx)
-    .await?;
-    let record = LinkRecord {
-        link_id,
+    let record = persist_xanadu_link(
+        &mut tx,
+        &request,
         event_id,
-        workspace: request.workspace,
-        actor: request.actor,
-        from: request.from,
-        to: request.to,
-        relation: XANADU_RELATION.to_owned(),
-        is_xanadu: true,
-        transclusion_id: Some(xanadu_group.canonical_group_id),
-        created_at: created_at.to_rfc3339(),
-    };
+        xanadu_group.canonical_group_id,
+        created_at,
+    )
+    .await?;
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
     project_graph_event(
-        &state,
+        state.pool(),
+        state.projection_coordinator(),
         &record.workspace,
         record.event_id,
         Box::pin(async {
             reproject_transclusion_group(
-                &state,
+                state.graph(),
+                state.pool(),
                 xanadu_group.canonical_group_id,
                 xanadu_group.merged_group_id,
             )
@@ -1666,55 +1766,56 @@ pub(crate) async fn add_xanadu_link(
 }
 
 pub(crate) async fn list_events(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<ListQuery>,
 ) -> AppResult<Vec<EventRecord>> {
     let limit = normalized_list_limit(query.limit);
-    let rows = fetch_event_rows_for_workspace(state.pool(), &workspace, limit).await?;
+    let rows = fetch_event_rows_for_workspace(&pool, &workspace, limit).await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
     Ok(success(data))
 }
 
 pub(crate) async fn tail_events(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<EventTailQuery>,
 ) -> AppResult<Vec<EventRecord>> {
     let limit = normalized_list_limit(query.limit);
     let cursor = if let Some(event_id) = query.after_event_id {
-        let event = fetch_event_row_for_workspace(state.pool(), &workspace, event_id).await?;
+        let event = fetch_event_row_for_workspace(&pool, &workspace, event_id).await?;
         Some(event.cursor())
     } else {
         None
     };
-    let rows =
-        fetch_event_rows_after_workspace_cursor(state.pool(), &workspace, cursor, limit).await?;
+    let rows = fetch_event_rows_after_workspace_cursor(&pool, &workspace, cursor, limit).await?;
     let data = rows.into_iter().map(EventRecord::from).collect();
     Ok(success(data))
 }
 
 pub(crate) async fn list_epics(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
 ) -> AppResult<Vec<EpicRecord>> {
-    ensure_workspace_policy(&state, &workspace).await?;
-    let rows = fetch_epic_rows_for_workspace(state.pool(), &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
+    let rows = fetch_epic_rows_for_workspace(&pool, &workspace).await?;
     let data = rows.into_iter().map(EpicRecord::from).collect();
     Ok(success(data))
 }
 
 pub(crate) async fn show_workspace_policy(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
 ) -> AppResult<WorkspacePolicy> {
-    let data = ensure_workspace_policy(&state, &workspace).await?;
+    let data = ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     Ok(success(data))
 }
 
 pub(crate) async fn update_workspace_policy(
     State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Json(request): Json<UpdateWorkspacePolicyRequest>,
 ) -> AppResult<WorkspacePolicy> {
     if request.workspace != workspace {
@@ -1723,7 +1824,7 @@ pub(crate) async fn update_workspace_policy(
         ));
     }
 
-    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
     let data = upsert_workspace_policy(
         state.pool(),
         &WorkspacePolicy {
@@ -1737,17 +1838,18 @@ pub(crate) async fn update_workspace_policy(
 }
 
 pub(crate) async fn list_workspace_memberships(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
 ) -> AppResult<Vec<WorkspaceMembership>> {
-    ensure_workspace_policy(&state, &workspace).await?;
-    let data = fetch_workspace_memberships(state.pool(), &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
+    let data = fetch_workspace_memberships(&pool, &workspace).await?;
     Ok(success(data))
 }
 
 pub(crate) async fn grant_workspace_membership(
     State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Json(request): Json<GrantWorkspaceMembershipRequest>,
 ) -> AppResult<WorkspaceMembership> {
     if request.workspace != workspace {
@@ -1756,7 +1858,7 @@ pub(crate) async fn grant_workspace_membership(
         ));
     }
 
-    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
     let data = upsert_workspace_membership(
         state.pool(),
         &WorkspaceMembership {
@@ -1770,18 +1872,19 @@ pub(crate) async fn grant_workspace_membership(
 }
 
 pub(crate) async fn list_workspace_public_keys(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<WorkspaceKeysQuery>,
 ) -> AppResult<Vec<ActorPublicKey>> {
-    ensure_workspace_policy(&state, &workspace).await?;
-    let data = fetch_actor_public_keys(state.pool(), &workspace, query.actor_id.as_deref()).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
+    let data = fetch_actor_public_keys(&pool, &workspace, query.actor_id.as_deref()).await?;
     Ok(success(data))
 }
 
 pub(crate) async fn add_workspace_public_key(
     State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Json(request): Json<AddWorkspacePublicKeyRequest>,
 ) -> AppResult<ActorPublicKey> {
     if request.workspace != workspace {
@@ -1790,7 +1893,7 @@ pub(crate) async fn add_workspace_public_key(
         ));
     }
 
-    require_workspace_admin(&state, &workspace, &request.actor).await?;
+    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
     let data = upsert_actor_public_key(
         state.pool(),
         &workspace,
@@ -1806,35 +1909,34 @@ pub(crate) async fn add_workspace_public_key(
 }
 
 pub(crate) async fn list_tasks(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<TaskListQuery>,
 ) -> AppResult<Vec<TaskListEntry>> {
-    ensure_workspace_policy(&state, &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let limit = normalized_list_limit(query.limit);
-    let rows = fetch_tasks_for_listing(
-        state.pool(),
-        &workspace,
-        task_selection_filters(&query),
-        Some(limit),
-    )
-    .await?;
-    let data = build_task_list_entries(state.pool(), rows).await?;
+    let rows =
+        fetch_tasks_for_listing(&pool, &workspace, task_selection_filters(&query), Some(limit))
+            .await?;
+    let data = build_task_list_entries(&pool, rows).await?;
     Ok(success(data))
 }
 
 pub(crate) async fn next_task(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
     Query(query): Query<TaskListQuery>,
 ) -> AppResult<Option<TaskListEntry>> {
-    ensure_workspace_policy(&state, &workspace).await?;
-    let row = fetch_tasks_for_listing(state.pool(), &workspace, task_next_filters(&query), Some(1))
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
+    let row = fetch_tasks_for_listing(&pool, &workspace, task_next_filters(&query), Some(1))
         .await?
         .into_iter()
         .next();
     let data = if let Some(task) = row {
-        build_task_list_entry(&state, task).await?
+        let mut entries = build_task_list_entries(&pool, vec![task]).await?;
+        entries.pop()
     } else {
         None
     };
@@ -1843,12 +1945,13 @@ pub(crate) async fn next_task(
 }
 
 pub(crate) async fn list_open_tasks(
-    State(state): State<AppState>,
-    Path(workspace): Path<String>,
+    State(bootstrap): State<WorkspaceGovernanceBootstrap>,
+    State(pool): State<PgPool>,
+    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
 ) -> AppResult<Vec<TaskListEntry>> {
-    ensure_workspace_policy(&state, &workspace).await?;
+    ensure_workspace_policy(&pool, &bootstrap, &workspace).await?;
     let rows = fetch_tasks_for_listing(
-        state.pool(),
+        &pool,
         &workspace,
         TaskListFilters {
             ready_only: false,
@@ -1858,7 +1961,7 @@ pub(crate) async fn list_open_tasks(
         None,
     )
     .await?;
-    let data = build_task_list_entries(state.pool(), rows).await?;
+    let data = build_task_list_entries(&pool, rows).await?;
     Ok(success(data))
 }
 
@@ -1867,9 +1970,16 @@ pub(crate) async fn claim_next_task(
     headers: HeaderMap,
     Json(request): Json<ClaimNextTaskRequest>,
 ) -> AppResult<Option<TaskClaimRecord>> {
-    require_workspace_editor(&state, &request.workspace, &request.actor).await?;
+    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+        .await?;
     if let Some(priority) = &request.priority {
-        ensure_supported_task_priority(&state, &request.workspace, priority).await?;
+        ensure_supported_task_priority(
+            state.pool(),
+            state.bootstrap(),
+            &request.workspace,
+            priority,
+        )
+        .await?;
     }
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
@@ -1930,11 +2040,13 @@ pub(crate) async fn claim_next_task(
                 tx.commit().await?;
                 let task_record = TaskRecord::from(task.clone());
                 project_graph_event(
-                    &state,
+                    state.pool(),
+                    state.projection_coordinator(),
                     &record.workspace,
                     record.event_id,
                     Box::pin(project_claimed_task_record(
-                        &state,
+                        state.graph(),
+                        state.pool(),
                         &task,
                         &task_record,
                         &record,
@@ -1954,26 +2066,27 @@ pub(crate) async fn claim_next_task(
 }
 
 pub(crate) async fn show_task(
-    State(state): State<AppState>,
-    Path(task_id): Path<Uuid>,
+    State(pool): State<PgPool>,
+    Path(TaskPath { task_id }): Path<TaskPath>,
 ) -> AppResult<TaskRecord> {
-    let data = TaskRecord::from(fetch_task_by_id(state.pool(), task_id).await?);
+    let data = TaskRecord::from(fetch_task_by_id(&pool, task_id).await?);
     Ok(success(data))
 }
 
 pub(crate) async fn task_context(
-    State(state): State<AppState>,
-    Path(task_id): Path<Uuid>,
+    State(graph): State<Arc<Graph>>,
+    State(pool): State<PgPool>,
+    Path(TaskPath { task_id }): Path<TaskPath>,
 ) -> AppResult<TaskContext> {
-    let task = fetch_task_by_id(state.pool(), task_id).await?;
-    let active_claim = fetch_active_claim(state.pool(), task_id)
+    let task = fetch_task_by_id(&pool, task_id).await?;
+    let active_claim = fetch_active_claim(&pool, task_id)
         .await?
         .map(TaskClaimRecord::from);
-    let epic = fetch_epic_for_task(state.pool(), &task).await?;
-    let dependencies = fetch_direct_dependencies(state.pool(), task_id).await?;
-    let dependents = fetch_direct_dependents(state.pool(), task_id).await?;
+    let epic = fetch_epic_for_task(&pool, &task).await?;
+    let dependencies = fetch_direct_dependencies(&pool, task_id).await?;
+    let dependents = fetch_direct_dependents(&pool, task_id).await?;
     let relations =
-        fetch_entity_relations(state.graph(), &threadplane_core::task_entity_ref(task_id))
+        fetch_entity_relations(graph.as_ref(), &threadplane_core::task_entity_ref(task_id))
             .await
             .map_err(ThreadplaneServerError::internal)?;
 
@@ -1983,7 +2096,7 @@ pub(crate) async fn task_context(
         dependencies,
         dependents,
         epic,
-        ready: task_is_ready(state.pool(), task_id).await?,
+        ready: task_is_ready(&pool, task_id).await?,
         relations,
     };
 
@@ -1991,16 +2104,16 @@ pub(crate) async fn task_context(
 }
 
 pub(crate) async fn task_dag(
-    State(state): State<AppState>,
-    Path(task_id): Path<Uuid>,
+    State(pool): State<PgPool>,
+    Path(TaskPath { task_id }): Path<TaskPath>,
 ) -> AppResult<TaskDag> {
-    let task = fetch_task_by_id(state.pool(), task_id).await?;
+    let task = fetch_task_by_id(&pool, task_id).await?;
     let data = TaskDag {
         task: task.clone().into(),
-        epic: fetch_epic_for_task(state.pool(), &task).await?,
-        ready: task_is_ready(state.pool(), task_id).await?,
-        dependencies: fetch_dependency_chain(state.pool(), task_id).await?,
-        dependents: fetch_dependent_chain(state.pool(), task_id).await?,
+        epic: fetch_epic_for_task(&pool, &task).await?,
+        ready: task_is_ready(&pool, task_id).await?,
+        dependencies: fetch_dependency_chain(&pool, task_id).await?,
+        dependents: fetch_dependent_chain(&pool, task_id).await?,
     };
 
     Ok(success(data))

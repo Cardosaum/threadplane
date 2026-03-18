@@ -4,11 +4,10 @@
 )]
 
 use neo4rs::{query, Graph};
-use sqlx::query_as;
+use sqlx::{query_as, PgPool};
 use uuid::Uuid;
 
 use crate::{
-    app::AppState,
     error::ServerResult,
     storage::{
         fetch_direct_dependencies, fetch_epic_by_id, fetch_task_by_id, NoteRow, TaskRow,
@@ -322,22 +321,17 @@ pub(crate) async fn project_task_dependency_by_id(
 }
 
 pub(crate) async fn project_task_supporting_entities(
-    state: &AppState,
+    graph: &Graph,
+    pool: &PgPool,
     task: &TaskRecord,
 ) -> ServerResult<()> {
     if let Some(epic_id) = task.epic_id {
-        let epic = EpicRecord::from(fetch_epic_by_id(state.pool(), epic_id).await?);
-        project_epic(state.graph(), &epic).await?;
+        let epic = EpicRecord::from(fetch_epic_by_id(pool, epic_id).await?);
+        project_epic(graph, &epic).await?;
     }
 
-    for dependency in fetch_direct_dependencies(state.pool(), task.task_id).await? {
-        project_task_dependency_by_id(
-            state.graph(),
-            state.pool(),
-            task.task_id,
-            dependency.task_id,
-        )
-        .await?;
+    for dependency in fetch_direct_dependencies(pool, task.task_id).await? {
+        project_task_dependency_by_id(graph, pool, task.task_id, dependency.task_id).await?;
     }
 
     Ok(())
@@ -421,13 +415,13 @@ pub(crate) async fn project_link(graph: &Graph, link: &LinkRecord) -> ServerResu
 }
 
 pub(crate) async fn reproject_transclusion_group(
-    state: &AppState,
+    graph: &Graph,
+    pool: &PgPool,
     group_id: Uuid,
     merged_group_id: Option<Uuid>,
 ) -> ServerResult<()> {
     if let Some(old_group_id) = merged_group_id {
-        state
-            .graph()
+        graph
             .run(
                 query("MATCH ()-[rel:XANADU_LINK {transclusion_id: $group_id}]-() DELETE rel")
                     .param("group_id", old_group_id.to_string()),
@@ -435,8 +429,7 @@ pub(crate) async fn reproject_transclusion_group(
             .await?;
     }
 
-    state
-        .graph()
+    graph
         .run(
             query("MATCH ()-[rel:XANADU_LINK {transclusion_id: $group_id}]-() DELETE rel")
                 .param("group_id", group_id.to_string()),
@@ -451,7 +444,7 @@ pub(crate) async fn reproject_transclusion_group(
         "
     ))
     .bind(group_id)
-    .fetch_all(state.pool())
+    .fetch_all(pool)
     .await?;
 
     let tasks: Vec<TaskRow> = query_as(&format!(
@@ -462,7 +455,7 @@ pub(crate) async fn reproject_transclusion_group(
         "
     ))
     .bind(group_id)
-    .fetch_all(state.pool())
+    .fetch_all(pool)
     .await?;
 
     let mut entity_refs = Vec::new();
@@ -470,13 +463,13 @@ pub(crate) async fn reproject_transclusion_group(
     for note in notes {
         let record = NoteRecord::from(note);
         entity_refs.push(record.entity_ref.clone());
-        project_note(state.graph(), &record).await?;
+        project_note(graph, &record).await?;
     }
 
     for task in tasks {
         let record = TaskRecord::from(task);
         entity_refs.push(record.entity_ref.clone());
-        project_task(state.graph(), &record).await?;
+        project_task(graph, &record).await?;
     }
 
     entity_refs.sort();
@@ -485,8 +478,7 @@ pub(crate) async fn reproject_transclusion_group(
             .iter()
             .skip(index.checked_add(1).unwrap_or(entity_refs.len()))
         {
-            state
-                .graph()
+            graph
                 .run(
                     query(
                         "

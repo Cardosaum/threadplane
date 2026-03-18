@@ -20,8 +20,7 @@ use crate::{
     error::{ServerResult, ThreadplaneServerError},
     projections::{
         project_claim, project_epic, project_link, project_memory, project_note, project_task,
-        project_task_dependency_by_id, project_task_supporting_entities,
-        reproject_transclusion_group,
+        project_task_dependency_by_id, project_task_supporting_entities, reproject_transclusion_group,
     },
     storage::{
         fetch_claim_by_event_id, fetch_epic_by_event_id, fetch_event_rows_after_cursor,
@@ -258,7 +257,7 @@ async fn project_note_updated(state: &AppState, event: &EventRow) -> ServerResul
     let note = fetch_note_by_id(state.pool(), request.note_id).await?;
 
     if let Some(group_id) = note.transclusion_id {
-        return reproject_transclusion_group(state, group_id, None).await;
+        return reproject_transclusion_group(state.graph(), state.pool(), group_id, None).await;
     }
 
     project_note(state.graph(), &note.into()).await
@@ -278,7 +277,7 @@ async fn project_task_updated(state: &AppState, event: &EventRow) -> ServerResul
     let task = fetch_task_by_id(state.pool(), request.task_id).await?;
 
     if let Some(group_id) = task.transclusion_id {
-        return reproject_transclusion_group(state, group_id, None).await;
+        return reproject_transclusion_group(state.graph(), state.pool(), group_id, None).await;
     }
 
     project_task_row(state, task.into()).await
@@ -339,13 +338,19 @@ async fn project_link_declared(state: &AppState, event: &EventRow) -> ServerResu
 
 async fn project_xanadu_linked(state: &AppState, event: &EventRow) -> ServerResult<()> {
     let payload: XanaduReplayPayload = serde_json::from_value(event.payload.clone())?;
-    reproject_transclusion_group(state, payload.transclusion_id, payload.merged_group_id).await
+    reproject_transclusion_group(
+        state.graph(),
+        state.pool(),
+        payload.transclusion_id,
+        payload.merged_group_id,
+    )
+    .await
 }
 
 async fn project_task_row(
     state: &AppState,
     task: threadplane_core::TaskRecord,
 ) -> ServerResult<()> {
-    project_task_supporting_entities(state, &task).await?;
+    project_task_supporting_entities(state.graph(), state.pool(), &task).await?;
     project_task(state.graph(), &task).await
 }
