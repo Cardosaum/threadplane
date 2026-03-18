@@ -37,11 +37,13 @@ use crate::{
 mod executor;
 pub(crate) mod paths;
 pub(crate) mod render;
+mod workspace;
 
 #[cfg(test)]
 mod tests_execution;
 
 pub(crate) use executor::execute;
+pub(crate) use workspace::{WorkspaceCommand, WorkspaceSubcommand};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -214,118 +216,6 @@ struct ConfigCommand {
 enum ConfigSubcommand {
     #[command(about = "Print the resolved config and where threadplane looks for it")]
     Show,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Inspect and manage workspace policy, memberships, and public keys")]
-struct WorkspaceCommand {
-    #[command(subcommand)]
-    command: WorkspaceSubcommand,
-}
-
-#[derive(Debug, Subcommand)]
-enum WorkspaceSubcommand {
-    #[command(about = "Add or update an actor public key for a workspace")]
-    KeyAdd(WorkspaceKeyAdd),
-    #[command(about = "List actor public keys registered for a workspace")]
-    KeyList(WorkspaceKeyList),
-    #[command(about = "Grant or update a workspace membership")]
-    MemberGrant(WorkspaceMemberGrant),
-    #[command(about = "List workspace memberships")]
-    MemberList(WorkspaceMemberList),
-    #[command(about = "Replace the workspace governance policy")]
-    PolicySet(WorkspacePolicySet),
-    #[command(about = "Show the effective workspace governance policy")]
-    PolicyShow(WorkspacePolicyShow),
-}
-
-#[derive(Debug, Args)]
-struct WorkspacePolicyShow {
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct WorkspacePolicySet {
-    #[arg(long, help = "Admin actor updating the workspace policy")]
-    actor: String,
-
-    #[arg(
-        long = "allowed-algorithm",
-        help = "Allowed public-key algorithm. Repeat for multiple algorithms.",
-        required = true
-    )]
-    allowed_algorithms: Vec<String>,
-
-    #[arg(long, help = "Challenge TTL in seconds")]
-    challenge_ttl_seconds: u32,
-
-    #[arg(long, help = "Default task priority name")]
-    default_priority: String,
-
-    #[arg(
-        long = "priority",
-        help = "Priority definition as name:rank[:description]. Repeat for multiple priorities.",
-        required = true
-    )]
-    priorities: Vec<String>,
-
-    #[arg(long, help = "Require signed commands for workspace mutations")]
-    signed_commands_required: bool,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct WorkspaceMemberList {
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct WorkspaceMemberGrant {
-    #[arg(long, help = "Admin actor granting the membership")]
-    actor: String,
-
-    #[arg(long, help = "Member actor ID")]
-    member_actor_id: String,
-
-    #[arg(long, help = "Workspace role to grant")]
-    role: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct WorkspaceKeyList {
-    #[arg(long, help = "Optional actor ID filter")]
-    actor_id: Option<String>,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct WorkspaceKeyAdd {
-    #[arg(long, help = "Admin actor registering the key")]
-    actor: String,
-
-    #[arg(long, help = "Public-key algorithm")]
-    algorithm: String,
-
-    #[arg(long, help = "Key ID")]
-    key_id: String,
-
-    #[arg(long, help = "Member actor ID")]
-    member_actor_id: String,
-
-    #[arg(long, help = "Public key material")]
-    public_key: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
 }
 
 #[derive(Debug, Args)]
