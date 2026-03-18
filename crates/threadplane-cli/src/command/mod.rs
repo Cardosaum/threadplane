@@ -66,19 +66,16 @@ pub(crate) use system::{
     BuildCommand, BuildSubcommand, ConfigCommand, ConfigSubcommand, ProjectionCommand,
     ProjectionSubcommand,
 };
-#[expect(
-    unused_imports,
-    reason = "The command module re-exports selected task types as the import seam for sibling modules and tests."
-)]
+#[cfg(test)]
+pub(crate) use task::TaskMetadataFilterArgs;
 pub(crate) use task::{
     apply_metadata_patch, dedup_task_ids, normalize_priority_name, parse_task_priority_input,
     select_dependency_view_from_context, select_dependency_view_from_dag, task_metadata_changed,
     task_metadata_from_args, triage_has_changes, triage_summary_labels, triage_summary_owner,
     AddTaskDependency, ClaimNextTask, ClaimTask, CompleteTask, ListTasks, NextTask, OfferTask,
     ReleaseTask, ShowTask, TaskCommand, TaskContextCommand, TaskDagCommand,
-    TaskDependencyViewCommand, TaskDependencyViewKind, TaskMetadataArgs, TaskMetadataFilterArgs,
-    TaskMetadataPatchArgs, TaskStatusValue, TaskSubcommand, TaskTriageOutcome, TaskTriageSummary,
-    TriageTasks, UpdateTask,
+    TaskDependencyViewCommand, TaskDependencyViewKind, TaskMetadataArgs, TaskMetadataPatchArgs,
+    TaskStatusValue, TaskSubcommand, TaskTriageOutcome, TaskTriageSummary, TriageTasks, UpdateTask,
 };
 pub(crate) use workspace::{WorkspaceCommand, WorkspaceSubcommand};
 
