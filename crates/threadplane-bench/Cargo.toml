@@ -24,6 +24,7 @@ threadplane-core = { path = "../threadplane-core" }
 uuid.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 rstest.workspace = true
 
 [build-dependencies]

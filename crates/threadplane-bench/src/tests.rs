@@ -1,3 +1,5 @@
+use proptest::{prop_assert, prop_assert_eq};
+use proptest::proptest;
 use rstest::rstest;
 use threadplane_core::build_info;
 
@@ -39,6 +41,50 @@ fn partition_operation_plan_keeps_all_operations() {
 
     let chunk_lengths: Vec<usize> = chunks.into_iter().map(|chunk| chunk.len()).collect();
     assert_eq!(chunk_lengths, vec![4, 4, 2]);
+}
+
+proptest! {
+    #[test]
+    fn partition_operation_plan_preserves_original_order(
+        operations in 1_usize..128,
+        workers in 1_usize..32,
+    ) {
+        let plan: Vec<_> = (0..operations)
+            .map(|index| OperationPlan::new(index, OperationKind::CreateNote))
+            .collect();
+
+        let chunks = partition_operation_plan(&plan, workers);
+        let flattened: Vec<_> = chunks.into_iter().flatten().collect();
+
+        prop_assert_eq!(flattened.len(), plan.len());
+        for (expected_index, entry) in flattened.iter().enumerate() {
+            let Some(expected) = plan.get(expected_index) else {
+                prop_assert!(false, "flattened plan must not exceed original plan length");
+                return Ok(());
+            };
+            prop_assert_eq!(format!("{entry:?}"), format!("{expected:?}"));
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn partition_operation_plan_never_creates_empty_chunks(
+        operations in 1_usize..128,
+        workers in 1_usize..32,
+    ) {
+        let plan: Vec<_> = (0..operations)
+            .map(|index| OperationPlan::new(index, OperationKind::OfferTask))
+            .collect();
+
+        let chunks = partition_operation_plan(&plan, workers);
+
+        for chunk in &chunks {
+            prop_assert!(!chunk.is_empty());
+        }
+        prop_assert!(chunks.len() <= workers);
+        prop_assert!(chunks.len() <= operations);
+    }
 }
 
 #[test]

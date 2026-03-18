@@ -1,5 +1,10 @@
 use std::io::Error as IoError;
 
+use alloc::collections::BTreeSet;
+use proptest::collection::vec;
+use proptest::prelude::any;
+use proptest::prop_assert_eq;
+use proptest::proptest;
 use snafu::IntoError as _;
 use uuid::Uuid;
 
@@ -384,6 +389,29 @@ fn dedup_task_ids_keeps_unique_sorted_values() {
     let high = Uuid::parse_str("99999999-2222-3333-4444-555555555555").unwrap_or_default();
 
     assert_eq!(dedup_task_ids(&[high, low, high]), vec![low, high]);
+}
+
+proptest! {
+    #[test]
+    fn dedup_task_ids_matches_btreeset(values in vec(any::<[u8; 16]>(), 0..64)) {
+        let uuids: Vec<_> = values.into_iter().map(Uuid::from_bytes).collect();
+        let expected: Vec<_> = uuids.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
+
+        prop_assert_eq!(dedup_task_ids(&uuids), expected);
+    }
+}
+
+proptest! {
+    #[test]
+    fn events_tail_path_preserves_cursor_identity(event_bytes in any::<[u8; 16]>(), limit in 1_i64..500) {
+        let event_id = Uuid::from_bytes(event_bytes);
+        let path = events_tail_path("threadplane-dev", limit, Some(event_id));
+
+        prop_assert_eq!(
+            path,
+            format!("/v1/workspaces/threadplane-dev/events/tail?limit={limit}&after_event_id={event_id}")
+        );
+    }
 }
 
 #[test]
