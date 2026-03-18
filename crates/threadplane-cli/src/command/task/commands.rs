@@ -1,5 +1,5 @@
 use super::super::*;
-use alloc::collections::BTreeSet;
+use super::*;
 
 #[derive(Debug, Args)]
 #[command(about = "Offer, claim, and inspect shared tasks")]
@@ -121,23 +121,6 @@ pub(crate) struct TaskDagCommand {
     pub(crate) task_id: Uuid,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum TaskStatusValue {
-    Claimed,
-    Completed,
-    Open,
-}
-
-impl TaskStatusValue {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Open => "open",
-            Self::Claimed => "claimed",
-            Self::Completed => "completed",
-        }
-    }
-}
-
 #[derive(Debug, Args)]
 pub(crate) struct AddTaskDependency {
     #[arg(long, help = "Actor adding the dependency edge")]
@@ -204,48 +187,6 @@ pub(crate) struct NextTask {
 
     #[arg(long, help = "Workspace name")]
     pub(crate) workspace: String,
-}
-
-#[derive(Debug, Args, Clone)]
-pub(crate) struct TaskMetadataArgs {
-    #[arg(long, help = "Durable label. Repeat for multiple labels")]
-    pub(crate) label: Vec<String>,
-
-    #[arg(long, help = "Durable owner, distinct from the temporary claim actor")]
-    pub(crate) owner: Option<String>,
-
-    #[arg(long, help = "Priority used for backlog sorting and filtering")]
-    pub(crate) priority: Option<String>,
-}
-
-#[derive(Debug, Args, Clone, Default)]
-pub(crate) struct TaskMetadataFilterArgs {
-    #[arg(long, help = "Only include tasks owned by this durable owner")]
-    pub(crate) owner: Option<String>,
-
-    #[arg(long, help = "Only include tasks with this priority")]
-    pub(crate) priority: Option<String>,
-}
-
-#[derive(Debug, Args, Clone, Default)]
-pub(crate) struct TaskMetadataPatchArgs {
-    #[arg(long, help = "Clear all durable labels")]
-    pub(crate) clear_labels: bool,
-
-    #[arg(long, help = "Clear any durable owner")]
-    pub(crate) clear_owner: bool,
-
-    #[arg(
-        long,
-        help = "Replace labels with this set. Repeat for multiple labels"
-    )]
-    pub(crate) label: Vec<String>,
-
-    #[arg(long, help = "Replace the durable owner")]
-    pub(crate) owner: Option<String>,
-
-    #[arg(long, help = "Replace the task priority")]
-    pub(crate) priority: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -344,41 +285,4 @@ pub(crate) struct UpdateTask {
 
     #[arg(long, help = "Workspace name")]
     pub(crate) workspace: String,
-}
-
-#[derive(Debug, Serialize)]
-pub(crate) struct TaskTriageSummary {
-    pub(crate) clear_labels: bool,
-    pub(crate) clear_owner: bool,
-    pub(crate) completed_task_ids: Vec<Uuid>,
-    pub(crate) epic_id: Option<Uuid>,
-    pub(crate) labels: Option<Vec<String>>,
-    pub(crate) owner: Option<String>,
-    pub(crate) priority: Option<TaskPriority>,
-    pub(crate) task_ids: Vec<Uuid>,
-    pub(crate) unchanged_task_ids: Vec<Uuid>,
-    pub(crate) updated_task_ids: Vec<Uuid>,
-    pub(crate) workspace: String,
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct TaskTriageOutcome {
-    pub(crate) changed: bool,
-    pub(crate) completed: bool,
-    pub(crate) updated: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum TaskDependencyViewKind {
-    BlockedBy,
-    Blocks,
-}
-
-pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
-    task_ids
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
