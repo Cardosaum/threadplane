@@ -35,9 +35,11 @@ use crate::{
 
 mod content;
 mod executor;
+mod parse;
 pub(crate) mod paths;
 mod reads;
 pub(crate) mod render;
+mod shared;
 mod system;
 mod task;
 mod workspace;
@@ -50,10 +52,16 @@ pub(crate) use content::{
     MemoryCommand, MemorySubcommand, NoteCommand, NoteSubcommand, PrimeMemories, SearchNotes,
 };
 pub(crate) use executor::execute;
+pub(crate) use parse::{
+    normalize_memory_filter_name, parse_memory_audience_input, parse_memory_importance_input,
+    parse_memory_kind_input, parse_memory_scope_input, parse_public_key_algorithm,
+    parse_public_key_algorithms, parse_workspace_priority_specs, parse_workspace_role,
+};
 pub(crate) use reads::{
     EntityCommand, EntitySubcommand, EventsCommand, EventsSubcommand, RelatedEntities, ShowEntity,
     TailEvents,
 };
+pub(crate) use shared::{build_mismatch_warning, MemoryListPathArgs, OutputFormat};
 pub(crate) use system::{
     BuildCommand, BuildSubcommand, ConfigCommand, ConfigSubcommand, ProjectionCommand,
     ProjectionSubcommand,
@@ -132,159 +140,4 @@ enum Command {
     Scope,
     Task(TaskCommand),
     Workspace(WorkspaceCommand),
-}
-
-#[derive(Debug, Clone, Copy, Default, ValueEnum)]
-pub(crate) enum OutputFormat {
-    Compact,
-    #[default]
-    Json,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct MemoryListPathArgs<'input> {
-    pub(crate) audience: Option<&'input str>,
-    pub(crate) importance: Option<&'input str>,
-    pub(crate) kind: Option<&'input str>,
-    pub(crate) limit: Option<i64>,
-    pub(crate) query: Option<&'input str>,
-    pub(crate) recall_trigger: Option<&'input str>,
-    pub(crate) tag: Option<&'input str>,
-    pub(crate) workspace: &'input str,
-}
-
-pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<String> {
-    if comparison.matches {
-        return None;
-    }
-
-    let changed_fields = comparison
-        .differences
-        .iter()
-        .map(|difference| difference.field.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    Some(format!(
-        "threadplane-cli {} ({}) differs from server {} ({}); changed fields: {}. Run `threadplane build compare` for details.",
-        comparison.client.version,
-        comparison.client.git_commit.as_deref().unwrap_or("unknown"),
-        comparison.server.version,
-        comparison.server.git_commit.as_deref().unwrap_or("unknown"),
-        changed_fields,
-    ))
-}
-
-fn parse_memory_kind_input(input: &str) -> Result<MemoryKind> {
-    MemoryKind::new(input).ok_or_else(|| {
-        Usage {
-            message: "memory kind cannot be empty".to_owned(),
-        }
-        .build()
-    })
-}
-
-fn parse_memory_audience_input(input: &str) -> Result<MemoryAudience> {
-    input.parse().map_err(|_error| {
-        Usage {
-            message: format!("unsupported memory audience `{input}`"),
-        }
-        .build()
-    })
-}
-
-fn parse_memory_importance_input(input: &str) -> Result<MemoryImportance> {
-    input.parse().map_err(|_error| {
-        Usage {
-            message: format!("unsupported memory importance `{input}`"),
-        }
-        .build()
-    })
-}
-
-fn parse_memory_scope_input(input: &str) -> Result<MemoryScope> {
-    input.parse().map_err(|_error| {
-        Usage {
-            message: format!("unsupported memory scope `{input}`"),
-        }
-        .build()
-    })
-}
-
-fn normalize_memory_filter_name(input: &str) -> Result<String> {
-    let normalized = threadplane_core::normalize_memory_kind_name(input);
-    if normalized.is_empty() {
-        return Err(Usage {
-            message: "memory filters cannot be empty".to_owned(),
-        }
-        .build());
-    }
-
-    Ok(normalized)
-}
-
-fn parse_public_key_algorithm(input: &str) -> Result<threadplane_core::PublicKeyAlgorithm> {
-    input.parse().map_err(|_error| {
-        Usage {
-            message: format!("unsupported public-key algorithm `{input}`"),
-        }
-        .build()
-    })
-}
-
-fn parse_public_key_algorithms(
-    inputs: &[String],
-) -> Result<Vec<threadplane_core::PublicKeyAlgorithm>> {
-    inputs
-        .iter()
-        .map(String::as_str)
-        .map(parse_public_key_algorithm)
-        .collect()
-}
-
-fn parse_workspace_priority_specs(inputs: &[String]) -> Result<Vec<WorkspacePriority>> {
-    inputs
-        .iter()
-        .map(String::as_str)
-        .map(parse_workspace_priority_spec)
-        .collect()
-}
-
-fn parse_workspace_role(input: &str) -> Result<WorkspaceRole> {
-    input.parse().map_err(|_error| {
-        Usage {
-            message: format!("unsupported workspace role `{input}`"),
-        }
-        .build()
-    })
-}
-
-fn parse_workspace_priority_spec(input: &str) -> Result<WorkspacePriority> {
-    let mut parts = input.splitn(3, ':');
-    let raw_name = parts.next().unwrap_or_default();
-    let raw_rank = parts.next().ok_or_else(|| {
-        Usage {
-            message: format!(
-                "priority definition `{input}` must look like name:rank[:description]"
-            ),
-        }
-        .build()
-    })?;
-    let description = parts
-        .next()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned);
-    let rank = raw_rank.parse::<u16>().map_err(|_error| {
-        Usage {
-            message: format!("priority rank `{raw_rank}` must be an unsigned integer"),
-        }
-        .build()
-    })?;
-
-    Ok(WorkspacePriority {
-        description,
-        name: normalize_priority_name(raw_name)?,
-        rank,
-    })
 }
