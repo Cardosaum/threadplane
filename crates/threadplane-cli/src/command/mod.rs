@@ -34,6 +34,7 @@ use crate::{
     runtime::{ApiClient, CommandContext, CommandOutput, Sleeper},
 };
 
+mod content;
 mod executor;
 pub(crate) mod paths;
 pub(crate) mod render;
@@ -42,6 +43,10 @@ mod workspace;
 #[cfg(test)]
 mod tests_execution;
 
+pub(crate) use content::{
+    ListMemories, ListNotes, MemoryCommand, MemorySubcommand, NoteCommand, NoteSubcommand,
+    PrimeMemories, SearchNotes,
+};
 pub(crate) use executor::execute;
 pub(crate) use workspace::{WorkspaceCommand, WorkspaceSubcommand};
 
@@ -335,20 +340,6 @@ struct AddXanaduLink {
 }
 
 #[derive(Debug, Args)]
-#[command(about = "Create, inspect, and update notes")]
-struct NoteCommand {
-    #[command(subcommand)]
-    command: NoteSubcommand,
-}
-
-#[derive(Debug, Args)]
-#[command(about = "Capture and recall durable memories for people and AI agents")]
-struct MemoryCommand {
-    #[command(subcommand)]
-    command: MemorySubcommand,
-}
-
-#[derive(Debug, Args)]
 #[command(about = "Inspect graph projection replay status")]
 struct ProjectionCommand {
     #[command(subcommand)]
@@ -359,223 +350,6 @@ struct ProjectionCommand {
 enum ProjectionSubcommand {
     #[command(about = "Show the persisted replay watermark for the graph projection")]
     Status,
-}
-
-#[derive(Debug, Subcommand)]
-enum NoteSubcommand {
-    #[command(about = "Create a new note in a workspace")]
-    Add(AddNote),
-    #[command(about = "List notes in a workspace")]
-    List(ListNotes),
-    #[command(about = "Search notes by title/body text")]
-    Search(SearchNotes),
-    #[command(about = "Fetch a note by ID")]
-    Show(ShowNote),
-    #[command(about = "Update a note and propagate through Xanadu links when present")]
-    Update(UpdateNote),
-}
-
-#[derive(Debug, Subcommand)]
-enum MemorySubcommand {
-    #[command(about = "Create a new structured memory in a workspace")]
-    Add(AddMemory),
-    #[command(about = "List memories with structured filters")]
-    List(ListMemories),
-    #[command(about = "Recall the startup memories an agent or human should prime with")]
-    Prime(PrimeMemories),
-    #[command(about = "Fetch a memory by ID")]
-    Show(ShowMemory),
-}
-
-#[derive(Debug, Args)]
-struct AddMemory {
-    #[arg(long, help = "Structured audience: agent, human, or both")]
-    audience: String,
-
-    #[arg(long, help = "Who is recording the memory")]
-    author: String,
-
-    #[arg(long, help = "Memory body")]
-    body: String,
-
-    #[arg(long, help = "Importance: normal, high, or critical")]
-    importance: String,
-
-    #[arg(long, help = "Memory kind, for example workflow, decision, or runbook")]
-    kind: String,
-
-    #[arg(
-        long = "recall-trigger",
-        help = "Recall trigger tag, for example session_start. Repeat for multiple triggers."
-    )]
-    recall_triggers: Vec<String>,
-
-    #[arg(long, help = "Scope: workspace, repo, or global")]
-    scope: String,
-
-    #[arg(long = "tag", help = "Memory tag. Repeat for multiple tags.")]
-    tags: Vec<String>,
-
-    #[arg(long, help = "Memory title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ListMemories {
-    #[arg(
-        long,
-        help = "Only include memories for this audience: agent, human, or both"
-    )]
-    audience: Option<String>,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Only include memories with this importance")]
-    importance: Option<String>,
-
-    #[arg(long, help = "Only include memories with this kind")]
-    kind: Option<String>,
-
-    #[arg(long, help = "Maximum number of memories to return")]
-    limit: Option<i64>,
-
-    #[arg(long, help = "Search query matched against memory title and body")]
-    query: Option<String>,
-
-    #[arg(
-        long = "recall-trigger",
-        help = "Only include memories with this recall trigger"
-    )]
-    recall_trigger: Option<String>,
-
-    #[arg(long, help = "Only include memories with this tag")]
-    tag: Option<String>,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct PrimeMemories {
-    #[arg(
-        long,
-        default_value = "agent",
-        help = "Recall memories for this audience: agent, human, or both"
-    )]
-    audience: String,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Maximum number of memories to return")]
-    limit: Option<i64>,
-
-    #[arg(long = "recall-trigger", default_value = "session_start")]
-    recall_trigger: String,
-
-    #[arg(long, default_value = "prime")]
-    tag: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ShowMemory {
-    #[arg(long, help = "Memory UUID")]
-    memory_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-struct AddNote {
-    #[arg(long, help = "Note author")]
-    author: String,
-
-    #[arg(long, help = "Note body")]
-    body: String,
-
-    #[arg(long, help = "Note title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ListNotes {
-    #[arg(long, help = "Only include notes from this author")]
-    author: Option<String>,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Maximum number of notes to return")]
-    limit: Option<i64>,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct SearchNotes {
-    #[arg(long, help = "Only include notes from this author")]
-    author: Option<String>,
-
-    #[arg(
-        long,
-        default_value = "json",
-        help = "Render JSON or a compact human-readable summary"
-    )]
-    format: OutputFormat,
-
-    #[arg(long, help = "Maximum number of notes to return")]
-    limit: Option<i64>,
-
-    #[arg(long, help = "Search query matched against note title and body")]
-    query: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
-}
-
-#[derive(Debug, Args)]
-struct ShowNote {
-    #[arg(long, help = "Note UUID")]
-    note_id: Uuid,
-}
-
-#[derive(Debug, Args)]
-struct UpdateNote {
-    #[arg(long, help = "Actor performing the update")]
-    actor: String,
-
-    #[arg(long, help = "Updated note body")]
-    body: String,
-
-    #[arg(long, help = "Note UUID")]
-    note_id: Uuid,
-
-    #[arg(long, help = "Updated note title")]
-    title: String,
-
-    #[arg(long, help = "Workspace name")]
-    workspace: String,
 }
 
 #[derive(Debug, Args)]
@@ -762,7 +536,7 @@ struct ListTasks {
 }
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     Compact,
     #[default]
     Json,
