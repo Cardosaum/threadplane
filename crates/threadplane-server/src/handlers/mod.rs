@@ -6,6 +6,7 @@
 mod links;
 mod reads;
 mod tasks;
+mod workspace;
 
 use axum::{
     extract::{Path, Query, State},
@@ -71,6 +72,9 @@ pub(crate) use reads::{
 pub(crate) use tasks::{
     add_task_dependency, claim_next_task, claim_task, complete_task, offer_task, release_task,
     task_next_filters, task_selection_filters, update_task,
+};
+pub(crate) use workspace::{
+    add_workspace_public_key, grant_workspace_membership, update_workspace_policy,
 };
 
 const DEFAULT_LIST_LIMIT: i64 = 25;
@@ -656,98 +660,6 @@ pub(crate) async fn update_note(
         .call()
         .await?;
     Ok(success_with_receipt(record, receipt))
-}
-
-pub(crate) async fn update_workspace_policy(
-    State(state): State<AppState>,
-    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
-    Json(request): Json<UpdateWorkspacePolicyRequest>,
-) -> AppResult<WorkspacePolicy> {
-    if request.workspace != workspace {
-        return Err(ThreadplaneServerError::bad_request(
-            "request workspace must match the path workspace",
-        ));
-    }
-
-    require_workspace_admin()
-        .pool(state.pool())
-        .bootstrap(state.bootstrap())
-        .workspace(&workspace)
-        .actor(&request.actor)
-        .call()
-        .await?;
-    let data = upsert_workspace_policy(
-        state.pool(),
-        &WorkspacePolicy {
-            auth: request.auth,
-            priorities: request.priorities,
-            workspace,
-        },
-    )
-    .await?;
-    Ok(success(data))
-}
-
-pub(crate) async fn grant_workspace_membership(
-    State(state): State<AppState>,
-    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
-    Json(request): Json<GrantWorkspaceMembershipRequest>,
-) -> AppResult<WorkspaceMembership> {
-    if request.workspace != workspace {
-        return Err(ThreadplaneServerError::bad_request(
-            "request workspace must match the path workspace",
-        ));
-    }
-
-    require_workspace_admin()
-        .pool(state.pool())
-        .bootstrap(state.bootstrap())
-        .workspace(&workspace)
-        .actor(&request.actor)
-        .call()
-        .await?;
-    let data = upsert_workspace_membership(
-        state.pool(),
-        &WorkspaceMembership {
-            actor_id: request.member_actor_id,
-            role: request.role,
-            workspace,
-        },
-    )
-    .await?;
-    Ok(success(data))
-}
-
-pub(crate) async fn add_workspace_public_key(
-    State(state): State<AppState>,
-    Path(WorkspacePath { workspace }): Path<WorkspacePath>,
-    Json(request): Json<AddWorkspacePublicKeyRequest>,
-) -> AppResult<ActorPublicKey> {
-    if request.workspace != workspace {
-        return Err(ThreadplaneServerError::bad_request(
-            "request workspace must match the path workspace",
-        ));
-    }
-
-    require_workspace_admin()
-        .pool(state.pool())
-        .bootstrap(state.bootstrap())
-        .workspace(&workspace)
-        .actor(&request.actor)
-        .call()
-        .await?;
-    let data = upsert_actor_public_key(
-        state.pool(),
-        &workspace,
-        &ActorPublicKey {
-            actor_id: request.member_actor_id,
-            algorithm: request.algorithm,
-            key_id: request.key_id,
-            public_key: request.public_key,
-        },
-    )
-    .await?;
-    Ok(success(data))
 }
 
 #[inline]
