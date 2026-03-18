@@ -1,17 +1,16 @@
 #![expect(
+    clippy::arbitrary_source_item_ordering,
     clippy::redundant_pub_crate,
-    reason = "CLI commands are crate-internal and keep explicit visibility for readability."
+    reason = "CLI commands are crate-internal and keep explicit visibility and workflow grouping for readability."
 )]
 
 use alloc::collections::BTreeSet;
 use core::time::Duration;
-use std::{path::PathBuf, thread};
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use reqwest::blocking::Client;
 use serde::Serialize;
-use serde_json::{json, to_string_pretty};
-use snafu::ResultExt as _;
+use serde_json::json;
 use uuid::Uuid;
 
 use threadplane_core::{
@@ -31,8 +30,8 @@ use threadplane_core::{
 
 use crate::{
     build_info::current_build_info,
-    error::{JsonRender, Result, Usage},
-    http::{get_json, patch_json, post_json, put_json},
+    error::{Result, Usage},
+    runtime::{ApiClient, CommandContext, CommandOutput, Sleeper},
 };
 
 #[derive(Debug, Parser)]
@@ -1072,741 +1071,885 @@ enum TaskDependencyViewKind {
     Blocks,
 }
 
-pub(crate) fn execute(
+pub(crate) fn execute<'cfg, 'ctx, A, O, S>(
     cli: Cli,
-    config: &ThreadplaneConfig,
-    discovery: &ConfigDiscovery,
-    client: &Client,
-) -> Result<()> {
-    let Cli {
-        command: root_command,
-        idempotency_key: command_idempotency_key,
-        ..
-    } = cli;
-    let server = config.cli.url.clone();
-    let idempotency_key = command_idempotency_key.as_deref();
+    config: &'cfg ThreadplaneConfig,
+    discovery: &'cfg ConfigDiscovery,
+    context: &'ctx mut CommandContext<'ctx, A, O, S>,
+) -> Result<()>
+where
+    A: ApiClient,
+    O: CommandOutput,
+    S: Sleeper,
+{
+    CommandExecutor::new(config, discovery, context).execute(cli)
+}
 
-    match root_command {
-        Command::Build(build_command) => handle_build(client, &server, &build_command)?,
-        Command::Config(config_command) => handle_config(&config_command, config, discovery)?,
-        Command::Entity(entity_command) => handle_entity(client, &server, entity_command)?,
-        Command::Epic(epic_command) => {
-            handle_epic(client, &server, idempotency_key, epic_command)?;
-        }
-        Command::Events(events_command) => handle_events(client, &server, events_command)?,
-        Command::Link(link_command) => {
-            handle_link(client, &server, idempotency_key, link_command)?;
-        }
-        Command::Memory(memory_command) => {
-            handle_memory(client, &server, idempotency_key, memory_command)?;
-        }
-        Command::Note(note_command) => {
-            handle_note(client, &server, idempotency_key, note_command)?;
-        }
-        Command::Projection(projection_command) => {
-            handle_projection(client, &server, &projection_command)?;
-        }
-        Command::Scope => handle_scope(client, &server)?,
-        Command::Task(task_command) => {
-            handle_task(client, &server, idempotency_key, task_command)?;
-        }
-        Command::Workspace(workspace_command) => {
-            handle_workspace(client, &server, idempotency_key, workspace_command)?;
+struct CommandExecutor<'cfg, 'ctx, A, O, S> {
+    config: &'cfg ThreadplaneConfig,
+    context: &'ctx mut CommandContext<'ctx, A, O, S>,
+    discovery: &'cfg ConfigDiscovery,
+}
+
+impl<'cfg, 'ctx, A, O, S> CommandExecutor<'cfg, 'ctx, A, O, S>
+where
+    A: ApiClient,
+    O: CommandOutput,
+    S: Sleeper,
+{
+    const fn new(
+        config: &'cfg ThreadplaneConfig,
+        discovery: &'cfg ConfigDiscovery,
+        context: &'ctx mut CommandContext<'ctx, A, O, S>,
+    ) -> Self {
+        Self {
+            config,
+            context,
+            discovery,
         }
     }
 
-    Ok(())
-}
-fn handle_build(client: &Client, server: &str, command: &BuildCommand) -> Result<()> {
-    match command.command {
-        BuildSubcommand::Show => print_value(&current_build_info()),
-        BuildSubcommand::Compare => {
-            let snapshot: ServiceSnapshot = get_json(client, server, "/")?;
-            let comparison = compare_build_info(&current_build_info(), &snapshot.build);
-            print_value(&comparison)
+    fn execute(&mut self, cli: Cli) -> Result<()> {
+        let Cli {
+            command: root_command,
+            idempotency_key: command_idempotency_key,
+            ..
+        } = cli;
+        let idempotency_key = command_idempotency_key.as_deref();
+
+        match root_command {
+            Command::Build(build_command) => self.handle_build(&build_command)?,
+            Command::Config(config_command) => self.handle_config(&config_command)?,
+            Command::Entity(entity_command) => self.handle_entity(entity_command)?,
+            Command::Epic(epic_command) => self.handle_epic(idempotency_key, epic_command)?,
+            Command::Events(events_command) => self.handle_events(events_command)?,
+            Command::Link(link_command) => self.handle_link(idempotency_key, link_command)?,
+            Command::Memory(memory_command) => self.handle_memory(idempotency_key, memory_command)?,
+            Command::Note(note_command) => self.handle_note(idempotency_key, note_command)?,
+            Command::Projection(projection_command) => self.handle_projection(&projection_command)?,
+            Command::Scope => self.handle_scope()?,
+            Command::Task(task_command) => self.handle_task(idempotency_key, task_command)?,
+            Command::Workspace(workspace_command) => {
+                self.handle_workspace(idempotency_key, workspace_command)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn handle_build(&mut self, command: &BuildCommand) -> Result<()> {
+        match command.command {
+            BuildSubcommand::Show => self.context.print_value(&current_build_info()),
+            BuildSubcommand::Compare => {
+                let snapshot: ServiceSnapshot = self.context.get_json("/")?;
+                let comparison = compare_build_info(&current_build_info(), &snapshot.build);
+                self.context.print_value(&comparison)
+            }
         }
     }
-}
 
-fn handle_epic(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: EpicCommand,
-) -> Result<()> {
-    match command.command {
-        EpicSubcommand::Add(epic) => {
-            let request = CreateEpicRequest {
-                workspace: epic.workspace,
-                author: epic.author,
-                title: epic.title,
-                body: epic.body,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/epics", &request, idempotency_key)?;
-            print_value(&response)
-        }
-        EpicSubcommand::List(epics) => {
-            let path = format!("/v1/workspaces/{}/epics", epics.workspace);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
-        EpicSubcommand::Show(epic) => {
-            let path = format!("/v1/epics/{}", epic.epic_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
+    fn handle_epic(&mut self, idempotency_key: Option<&str>, command: EpicCommand) -> Result<()> {
+        match command.command {
+            EpicSubcommand::Add(epic) => {
+                let request = CreateEpicRequest {
+                    workspace: epic.workspace,
+                    author: epic.author,
+                    title: epic.title,
+                    body: epic.body,
+                };
+                let response: serde_json::Value =
+                    self.context
+                        .post_json("/v1/epics", &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
+            EpicSubcommand::List(epics) => {
+                let path = format!("/v1/workspaces/{}/epics", epics.workspace);
+                let response: serde_json::Value = self.context.get_json(&path)?;
+                self.context.print_value(&response)
+            }
+            EpicSubcommand::Show(epic) => {
+                let path = format!("/v1/epics/{}", epic.epic_id);
+                let response: serde_json::Value = self.context.get_json(&path)?;
+                self.context.print_value(&response)
+            }
         }
     }
-}
 
-fn handle_config(
-    command: &ConfigCommand,
-    config: &ThreadplaneConfig,
-    discovery: &ConfigDiscovery,
-) -> Result<()> {
-    match command.command {
-        ConfigSubcommand::Show => {
-            let payload = json!({
-                "config": config,
-                "discovery": {
-                    "search_order": discovery.search_order,
-                    "selected_path": discovery.selected_path,
-                    "explicit_override": discovery.explicit_override,
-                    "env_override": discovery.env_override,
-                    "env_prefix": discovery.env_prefix,
+    fn handle_config(&mut self, command: &ConfigCommand) -> Result<()> {
+        match command.command {
+            ConfigSubcommand::Show => {
+                let payload = json!({
+                    "config": self.config,
+                    "discovery": {
+                        "search_order": self.discovery.search_order,
+                        "selected_path": self.discovery.selected_path,
+                        "explicit_override": self.discovery.explicit_override,
+                        "env_override": self.discovery.env_override,
+                        "env_prefix": self.discovery.env_prefix,
+                    }
+                });
+                self.context.print_value(&payload)
+            }
+        }
+    }
+
+    fn handle_workspace(
+        &mut self,
+        idempotency_key: Option<&str>,
+        command: WorkspaceCommand,
+    ) -> Result<()> {
+        match command.command {
+            WorkspaceSubcommand::PolicyShow(workspace) => {
+                let response: ApiEnvelope<WorkspacePolicy> =
+                    self.context
+                        .get_json(&workspace_policy_path(&workspace.workspace))?;
+                self.context.print_value(&response)
+            }
+            WorkspaceSubcommand::PolicySet(workspace) => {
+                let request = UpdateWorkspacePolicyRequest {
+                    actor: workspace.actor,
+                    auth: WorkspaceAuthPolicy {
+                        allowed_algorithms: parse_public_key_algorithms(
+                            &workspace.allowed_algorithms,
+                        )?,
+                        challenge_ttl_seconds: workspace.challenge_ttl_seconds,
+                        signed_commands_required: workspace.signed_commands_required,
+                    },
+                    priorities: WorkspacePriorityPolicy {
+                        default_priority: normalize_priority_name(&workspace.default_priority)?,
+                        priorities: parse_workspace_priority_specs(&workspace.priorities)?,
+                    },
+                    workspace: workspace.workspace.clone(),
+                };
+                let response: ApiEnvelope<WorkspacePolicy> = self.context.put_json(
+                    &workspace_policy_path(&workspace.workspace),
+                    &request,
+                    idempotency_key,
+                )?;
+                self.context.print_value(&response)
+            }
+            WorkspaceSubcommand::MemberList(workspace) => {
+                let response: ApiEnvelope<Vec<WorkspaceMembership>> =
+                    self.context.get_json(&workspace_memberships_path(&workspace.workspace))?;
+                self.context.print_value(&response)
+            }
+            WorkspaceSubcommand::MemberGrant(workspace) => {
+                let request = GrantWorkspaceMembershipRequest {
+                    actor: workspace.actor,
+                    member_actor_id: workspace.member_actor_id,
+                    role: parse_workspace_role(&workspace.role)?,
+                    workspace: workspace.workspace.clone(),
+                };
+                let response: ApiEnvelope<WorkspaceMembership> = self.context.post_json(
+                    &workspace_memberships_path(&workspace.workspace),
+                    &request,
+                    idempotency_key,
+                )?;
+                self.context.print_value(&response)
+            }
+            WorkspaceSubcommand::KeyList(workspace) => {
+                let response: ApiEnvelope<Vec<ActorPublicKey>> = self.context.get_json(
+                    &workspace_keys_path(&workspace.workspace, workspace.actor_id.as_deref()),
+                )?;
+                self.context.print_value(&response)
+            }
+            WorkspaceSubcommand::KeyAdd(workspace) => {
+                let request = AddWorkspacePublicKeyRequest {
+                    actor: workspace.actor,
+                    algorithm: parse_public_key_algorithm(&workspace.algorithm)?,
+                    key_id: workspace.key_id,
+                    member_actor_id: workspace.member_actor_id,
+                    public_key: workspace.public_key,
+                    workspace: workspace.workspace.clone(),
+                };
+                let response: ApiEnvelope<ActorPublicKey> = self.context.post_json(
+                    &workspace_keys_path(&workspace.workspace, None),
+                    &request,
+                    idempotency_key,
+                )?;
+                self.context.print_value(&response)
+            }
+        }
+    }
+
+    fn handle_entity(&mut self, command: EntityCommand) -> Result<()> {
+        match command.command {
+            EntitySubcommand::Show(entity) => self.handle_show_entity(&entity),
+            EntitySubcommand::Related(entity) => self.handle_related_entities(&entity),
+        }
+    }
+
+    fn handle_show_entity(&mut self, entity: &ShowEntity) -> Result<()> {
+        let path = entity_show_path(entity.entity_ref.as_str());
+        let response: ApiEnvelope<EntityContext> = self.context.get_json(&path)?;
+
+        match entity.format {
+            OutputFormat::Compact => {
+                self.context.print_compact(&render_entity_context_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_related_entities(&mut self, entity: &RelatedEntities) -> Result<()> {
+        let path = entity_relations_path(entity.entity_ref.as_str());
+        let response: ApiEnvelope<Vec<GraphRelation>> = self.context.get_json(&path)?;
+
+        match entity.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_graph_relations_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_events(&mut self, command: EventsCommand) -> Result<()> {
+        match command.command {
+            EventsSubcommand::List(events) => {
+                let path = events_list_path(events.workspace.as_str(), events.limit);
+                let response: ApiEnvelope<Vec<EventRecord>> = self.context.get_json(&path)?;
+                match events.format {
+                    OutputFormat::Compact => {
+                        self.context
+                            .print_compact(&render_event_list_compact(&response.data));
+                        Ok(())
+                    }
+                    OutputFormat::Json => self.context.print_value(&response),
                 }
-            });
-            print_value(&payload)
+            }
+            EventsSubcommand::Tail(events) => self.handle_tail_events(&events),
         }
     }
-}
 
-fn handle_workspace(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: WorkspaceCommand,
-) -> Result<()> {
-    match command.command {
-        WorkspaceSubcommand::PolicyShow(workspace) => {
-            let response: ApiEnvelope<WorkspacePolicy> =
-                get_json(client, server, &workspace_policy_path(&workspace.workspace))?;
-            print_value(&response)
+    fn handle_scope(&mut self) -> Result<()> {
+        let scope: serde_json::Value = self.context.get_json("/scope")?;
+        let snapshot: ServiceSnapshot = self.context.get_json("/")?;
+        let comparison = compare_build_info(&current_build_info(), &snapshot.build);
+
+        if let Some(warning) = build_mismatch_warning(&comparison) {
+            self.context.warn(&format!("warning: {warning}"));
         }
-        WorkspaceSubcommand::PolicySet(workspace) => {
-            let request = UpdateWorkspacePolicyRequest {
-                actor: workspace.actor,
-                auth: WorkspaceAuthPolicy {
-                    allowed_algorithms: parse_public_key_algorithms(&workspace.allowed_algorithms)?,
-                    challenge_ttl_seconds: workspace.challenge_ttl_seconds,
-                    signed_commands_required: workspace.signed_commands_required,
-                },
-                priorities: WorkspacePriorityPolicy {
-                    default_priority: normalize_priority_name(&workspace.default_priority)?,
-                    priorities: parse_workspace_priority_specs(&workspace.priorities)?,
-                },
-                workspace: workspace.workspace.clone(),
-            };
-            let response: ApiEnvelope<WorkspacePolicy> = put_json(
-                client,
-                server,
-                &workspace_policy_path(&workspace.workspace),
-                &request,
-                idempotency_key,
-            )?;
-            print_value(&response)
-        }
-        WorkspaceSubcommand::MemberList(workspace) => {
-            let response: ApiEnvelope<Vec<WorkspaceMembership>> = get_json(
-                client,
-                server,
-                &workspace_memberships_path(&workspace.workspace),
-            )?;
-            print_value(&response)
-        }
-        WorkspaceSubcommand::MemberGrant(workspace) => {
-            let request = GrantWorkspaceMembershipRequest {
-                actor: workspace.actor,
-                member_actor_id: workspace.member_actor_id,
-                role: parse_workspace_role(&workspace.role)?,
-                workspace: workspace.workspace.clone(),
-            };
-            let response: ApiEnvelope<WorkspaceMembership> = post_json(
-                client,
-                server,
-                &workspace_memberships_path(&workspace.workspace),
-                &request,
-                idempotency_key,
-            )?;
-            print_value(&response)
-        }
-        WorkspaceSubcommand::KeyList(workspace) => {
-            let response: ApiEnvelope<Vec<ActorPublicKey>> = get_json(
-                client,
-                server,
-                &workspace_keys_path(&workspace.workspace, workspace.actor_id.as_deref()),
-            )?;
-            print_value(&response)
-        }
-        WorkspaceSubcommand::KeyAdd(workspace) => {
-            let request = AddWorkspacePublicKeyRequest {
-                actor: workspace.actor,
-                algorithm: parse_public_key_algorithm(&workspace.algorithm)?,
-                key_id: workspace.key_id,
-                member_actor_id: workspace.member_actor_id,
-                public_key: workspace.public_key,
-                workspace: workspace.workspace.clone(),
-            };
-            let response: ApiEnvelope<ActorPublicKey> = post_json(
-                client,
-                server,
-                &workspace_keys_path(&workspace.workspace, None),
-                &request,
-                idempotency_key,
-            )?;
-            print_value(&response)
+
+        self.context.print_value(&scope)
+    }
+
+    fn handle_link(
+        &mut self,
+        idempotency_key: Option<&str>,
+        command: LinkCommand,
+    ) -> Result<()> {
+        match command.command {
+            LinkSubcommand::Add(link) => {
+                let request = AddLinkRequest {
+                    workspace: link.workspace,
+                    actor: link.actor,
+                    from: link.from,
+                    to: link.to,
+                    relation: link.relation,
+                };
+                let response: serde_json::Value =
+                    self.context
+                        .post_json("/v1/links", &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
+            LinkSubcommand::Xanadu(link) => {
+                let request = CreateXanaduLinkRequest {
+                    workspace: link.workspace,
+                    actor: link.actor,
+                    from: link.from,
+                    to: link.to,
+                };
+                let response: serde_json::Value =
+                    self.context
+                        .post_json("/v1/links/xanadu", &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
         }
     }
-}
 
-fn handle_entity(client: &Client, server: &str, command: EntityCommand) -> Result<()> {
-    match command.command {
-        EntitySubcommand::Show(entity) => handle_show_entity(client, server, &entity),
-        EntitySubcommand::Related(entity) => handle_related_entities(client, server, &entity),
-    }
-}
-
-fn handle_show_entity(client: &Client, server: &str, entity: &ShowEntity) -> Result<()> {
-    let path = entity_show_path(entity.entity_ref.as_str());
-    let response: ApiEnvelope<EntityContext> = get_json(client, server, &path)?;
-
-    match entity.format {
-        OutputFormat::Compact => {
-            print!("{}", render_entity_context_compact(&response.data));
-            Ok(())
+    fn handle_note(
+        &mut self,
+        idempotency_key: Option<&str>,
+        command: NoteCommand,
+    ) -> Result<()> {
+        match command.command {
+            NoteSubcommand::Add(add) => {
+                let request = CreateNoteRequest {
+                    workspace: add.workspace,
+                    author: add.author,
+                    title: add.title,
+                    body: add.body,
+                };
+                let response: serde_json::Value =
+                    self.context
+                        .post_json("/v1/notes", &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
+            NoteSubcommand::List(list) => self.handle_list_notes(&list),
+            NoteSubcommand::Search(search) => self.handle_search_notes(&search),
+            NoteSubcommand::Show(show) => {
+                let path = note_path(show.note_id);
+                let response: serde_json::Value = self.context.get_json(&path)?;
+                self.context.print_value(&response)
+            }
+            NoteSubcommand::Update(update) => {
+                let path = note_path(update.note_id);
+                let request = UpdateNoteRequest {
+                    workspace: update.workspace,
+                    actor: update.actor,
+                    note_id: update.note_id,
+                    title: update.title,
+                    body: update.body,
+                };
+                let response: serde_json::Value =
+                    self.context.patch_json(&path, &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
         }
-        OutputFormat::Json => print_value(&response),
     }
-}
 
-fn handle_related_entities(client: &Client, server: &str, entity: &RelatedEntities) -> Result<()> {
-    let path = entity_relations_path(entity.entity_ref.as_str());
-    let response: ApiEnvelope<Vec<GraphRelation>> = get_json(client, server, &path)?;
-
-    match entity.format {
-        OutputFormat::Compact => {
-            print!("{}", render_graph_relations_compact(&response.data));
-            Ok(())
+    fn handle_memory(
+        &mut self,
+        idempotency_key: Option<&str>,
+        command: MemoryCommand,
+    ) -> Result<()> {
+        match command.command {
+            MemorySubcommand::Add(add) => {
+                let request = CreateMemoryRequest {
+                    workspace: add.workspace,
+                    author: add.author,
+                    title: add.title,
+                    body: add.body,
+                    kind: parse_memory_kind_input(&add.kind)?,
+                    scope: parse_memory_scope_input(&add.scope)?,
+                    audience: parse_memory_audience_input(&add.audience)?,
+                    importance: parse_memory_importance_input(&add.importance)?,
+                    tags: add.tags,
+                    recall_triggers: add.recall_triggers,
+                };
+                let response: serde_json::Value =
+                    self.context
+                        .post_json("/v1/memories", &request, idempotency_key)?;
+                self.context.print_value(&response)
+            }
+            MemorySubcommand::List(list) => self.handle_list_memories(&list),
+            MemorySubcommand::Prime(prime) => self.handle_prime_memories(&prime),
+            MemorySubcommand::Show(show) => {
+                let path = memory_path(show.memory_id);
+                let response: serde_json::Value = self.context.get_json(&path)?;
+                self.context.print_value(&response)
+            }
         }
-        OutputFormat::Json => print_value(&response),
     }
-}
 
-fn handle_events(client: &Client, server: &str, command: EventsCommand) -> Result<()> {
-    match command.command {
-        EventsSubcommand::List(events) => {
-            let path = events_list_path(events.workspace.as_str(), events.limit);
-            let response: ApiEnvelope<Vec<EventRecord>> = get_json(client, server, &path)?;
+    fn handle_list_memories(&mut self, memory: &ListMemories) -> Result<()> {
+        let path = memory_list_path(MemoryListPathArgs {
+            audience: memory.audience.as_deref(),
+            importance: memory.importance.as_deref(),
+            kind: memory.kind.as_deref(),
+            limit: memory.limit,
+            query: memory.query.as_deref(),
+            recall_trigger: memory.recall_trigger.as_deref(),
+            tag: memory.tag.as_deref(),
+            workspace: memory.workspace.as_str(),
+        })?;
+        let response: ApiEnvelope<Vec<MemoryRecord>> = self.context.get_json(&path)?;
+
+        match memory.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_memory_list_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_prime_memories(&mut self, memory: &PrimeMemories) -> Result<()> {
+        let path = memory_prime_path(memory)?;
+        let response: ApiEnvelope<Vec<MemoryRecord>> = self.context.get_json(&path)?;
+
+        match memory.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_memory_list_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_list_notes(&mut self, note: &ListNotes) -> Result<()> {
+        let path = note_list_path(
+            note.workspace.as_str(),
+            note.limit,
+            note.author.as_deref(),
+            None,
+        );
+        let response: ApiEnvelope<Vec<NoteRecord>> = self.context.get_json(&path)?;
+
+        match note.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_note_list_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_search_notes(&mut self, note: &SearchNotes) -> Result<()> {
+        let path = note_list_path(
+            note.workspace.as_str(),
+            note.limit,
+            note.author.as_deref(),
+            Some(note.query.as_str()),
+        );
+        let response: ApiEnvelope<Vec<NoteRecord>> = self.context.get_json(&path)?;
+
+        match note.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_note_list_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_projection(&mut self, command: &ProjectionCommand) -> Result<()> {
+        match command.command {
+            ProjectionSubcommand::Status => {
+                let response: ApiEnvelope<ProjectionStatus> =
+                    self.context.get_json("/v1/projections/graph")?;
+                self.context.print_value(&response)
+            }
+        }
+    }
+    fn handle_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        command: TaskCommand,
+    ) -> Result<()> {
+        match command.command {
+            TaskSubcommand::BlockedBy(task) => {
+                self.handle_task_dependency_view(&task, TaskDependencyViewKind::BlockedBy)
+            }
+            TaskSubcommand::Blocks(task) => {
+                self.handle_task_dependency_view(&task, TaskDependencyViewKind::Blocks)
+            }
+            TaskSubcommand::ClaimNext(task) => self.handle_claim_next_task(idempotency_key, task),
+            TaskSubcommand::Claim(task) => self.handle_claim_task(idempotency_key, task),
+            TaskSubcommand::Complete(task) => self.handle_complete_task(idempotency_key, task),
+            TaskSubcommand::Context(task) => self.handle_task_context(&task),
+            TaskSubcommand::Dag(task) => self.handle_task_dag(&task),
+            TaskSubcommand::Depend(task) => self.handle_add_task_dependency(idempotency_key, task),
+            TaskSubcommand::List(task) => self.handle_list_tasks(&task),
+            TaskSubcommand::Next(task) => self.handle_next_task(&task),
+            TaskSubcommand::Offer(task) => self.handle_offer_task(idempotency_key, task),
+            TaskSubcommand::Release(task) => self.handle_release_task(idempotency_key, task),
+            TaskSubcommand::Show(task) => self.handle_show_task(&task),
+            TaskSubcommand::Triage(task) => {
+                let response = self.triage_tasks(idempotency_key, &task)?;
+                self.context.print_value(&response)
+            }
+            TaskSubcommand::Update(task) => self.handle_update_task(idempotency_key, task),
+        }
+    }
+
+    fn handle_add_task_dependency(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: AddTaskDependency,
+    ) -> Result<()> {
+        let request = AddTaskDependencyRequest {
+            workspace: task.workspace,
+            actor: task.actor,
+            task_id: task.task_id,
+            depends_on_task_id: task.depends_on,
+        };
+        let response: serde_json::Value = self.context.post_json(
+            &task_dependencies_path(task.task_id),
+            &request,
+            idempotency_key,
+        )?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_claim_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: ClaimTask,
+    ) -> Result<()> {
+        let request = ClaimTaskRequest {
+            workspace: task.workspace,
+            actor: task.actor,
+            task_id: task.task_id,
+            lease_seconds: task.lease_seconds,
+        };
+        let path = task_claims_path(task.task_id);
+        let response: serde_json::Value =
+            self.context.post_json(&path, &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_claim_next_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: ClaimNextTask,
+    ) -> Result<()> {
+        let request = ClaimNextTaskRequest {
+            actor: task.actor,
+            epic_id: task.epic_id,
+            label: task
+                .label
+                .and_then(|value| normalize_task_labels(vec![value]).into_iter().next()),
+            lease_seconds: task.lease_seconds,
+            owner: normalize_task_owner(task.metadata_filters.owner),
+            priority: task
+                .metadata_filters
+                .priority
+                .as_deref()
+                .map(parse_task_priority_input)
+                .transpose()?,
+            workspace: task.workspace,
+        };
+        let response: ApiEnvelope<Option<TaskClaimRecord>> =
+            self.context
+                .post_json("/v1/tasks/claims/next", &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_complete_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: CompleteTask,
+    ) -> Result<()> {
+        let request = CompleteTaskRequest {
+            workspace: task.workspace,
+            actor: task.actor,
+            task_id: task.task_id,
+        };
+        let path = task_completion_path(task.task_id);
+        let response: serde_json::Value =
+            self.context.post_json(&path, &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_list_tasks(&mut self, task: &ListTasks) -> Result<()> {
+        let path = task_list_path(task)?;
+        let response: ApiEnvelope<Vec<TaskListEntry>> = self.context.get_json(&path)?;
+
+        match task.format {
+            OutputFormat::Compact => {
+                self.context
+                    .print_compact(&render_task_list_compact(&response.data));
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_next_task(&mut self, task: &NextTask) -> Result<()> {
+        let path = task_next_path(task)?;
+        let response: ApiEnvelope<Option<TaskListEntry>> = self.context.get_json(&path)?;
+
+        match task.format {
+            OutputFormat::Compact => {
+                let rendered = response.data.map_or_else(
+                    || "no tasks\n".to_owned(),
+                    |entry| render_task_list_compact(&[entry]),
+                );
+                self.context.print_compact(&rendered);
+                Ok(())
+            }
+            OutputFormat::Json => self.context.print_value(&response),
+        }
+    }
+
+    fn handle_offer_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: OfferTask,
+    ) -> Result<()> {
+        let workspace_policy = self.fetch_workspace_policy_summary(&task.workspace)?;
+        let request = OfferTaskRequest {
+            workspace: task.workspace,
+            author: task.author,
+            depends_on: task.depends_on,
+            title: task.title,
+            details: task.details,
+            epic_id: task.epic_id,
+            metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
+        };
+        let response: serde_json::Value =
+            self.context.post_json("/v1/tasks", &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_release_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: ReleaseTask,
+    ) -> Result<()> {
+        let request = ReleaseTaskRequest {
+            workspace: task.workspace,
+            actor: task.actor,
+            task_id: task.task_id,
+        };
+        let path = task_claim_release_path(task.task_id);
+        let response: serde_json::Value =
+            self.context.post_json(&path, &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_show_task(&mut self, task: &ShowTask) -> Result<()> {
+        let path = task_path(task.task_id);
+        let response: serde_json::Value = self.context.get_json(&path)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_task_context(&mut self, task: &TaskContextCommand) -> Result<()> {
+        let path = task_context_path(task.task_id);
+        let response: serde_json::Value = self.context.get_json(&path)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_task_dag(&mut self, task: &TaskDagCommand) -> Result<()> {
+        let path = task_dag_path(task.task_id);
+        let response: serde_json::Value = self.context.get_json(&path)?;
+        self.context.print_value(&response)
+    }
+
+    fn handle_update_task(
+        &mut self,
+        idempotency_key: Option<&str>,
+        task: UpdateTask,
+    ) -> Result<()> {
+        let workspace_policy = self.fetch_workspace_policy_summary(&task.workspace)?;
+        let request = UpdateTaskRequest {
+            workspace: task.workspace,
+            actor: task.actor,
+            task_id: task.task_id,
+            title: task.title,
+            details: task.details,
+            epic_id: task.epic_id,
+            metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
+        };
+        let path = task_path(task.task_id);
+        let response: serde_json::Value =
+            self.context.patch_json(&path, &request, idempotency_key)?;
+        self.context.print_value(&response)
+    }
+
+    fn fetch_task_context(&self, task_id: Uuid) -> Result<TaskContext> {
+        let path = task_context_path(task_id);
+        let response: ApiEnvelope<TaskContext> = self.context.get_json(&path)?;
+        Ok(response.data)
+    }
+
+    fn handle_tail_events(&mut self, events: &TailEvents) -> Result<()> {
+        let mut cursor = events.after_event_id;
+
+        loop {
+            let path = events_tail_path(events.workspace.as_str(), events.limit, cursor);
+            let response: ApiEnvelope<Vec<EventRecord>> = self.context.get_json(&path)?;
+            let latest_event_id = response.data.last().map(|event| event.event_id);
+
             match events.format {
                 OutputFormat::Compact => {
-                    print!("{}", render_event_list_compact(&response.data));
-                    Ok(())
+                    if !response.data.is_empty() {
+                        self.context
+                            .print_compact(&render_event_list_compact(&response.data));
+                    }
+                    if response.data.is_empty() && !events.follow {
+                        self.context.print_compact("no events\n");
+                    }
                 }
-                OutputFormat::Json => print_value(&response),
+                OutputFormat::Json => self.context.print_value(&response)?,
             }
-        }
-        EventsSubcommand::Tail(events) => handle_tail_events(client, server, &events),
-    }
-}
 
-fn handle_scope(client: &Client, server: &str) -> Result<()> {
-    let scope: serde_json::Value = get_json(client, server, "/scope")?;
-    let snapshot: ServiceSnapshot = get_json(client, server, "/")?;
-    let comparison = compare_build_info(&current_build_info(), &snapshot.build);
+            cursor = latest_event_id.or(cursor);
+            if !events.follow {
+                return Ok(());
+            }
 
-    if let Some(warning) = build_mismatch_warning(&comparison) {
-        eprintln!("warning: {warning}");
-    }
-
-    print_value(&scope)
-}
-
-fn handle_link(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: LinkCommand,
-) -> Result<()> {
-    match command.command {
-        LinkSubcommand::Add(link) => {
-            let request = AddLinkRequest {
-                workspace: link.workspace,
-                actor: link.actor,
-                from: link.from,
-                to: link.to,
-                relation: link.relation,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/links", &request, idempotency_key)?;
-            print_value(&response)
-        }
-        LinkSubcommand::Xanadu(link) => {
-            let request = CreateXanaduLinkRequest {
-                workspace: link.workspace,
-                actor: link.actor,
-                from: link.from,
-                to: link.to,
-            };
-            let response: serde_json::Value = post_json(
-                client,
-                server,
-                "/v1/links/xanadu",
-                &request,
-                idempotency_key,
-            )?;
-            print_value(&response)
+            self.context.sleep(Duration::from_secs(events.poll_seconds));
         }
     }
-}
 
-fn handle_note(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: NoteCommand,
-) -> Result<()> {
-    match command.command {
-        NoteSubcommand::Add(add) => {
-            let request = CreateNoteRequest {
-                workspace: add.workspace,
-                author: add.author,
-                title: add.title,
-                body: add.body,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/notes", &request, idempotency_key)?;
-            print_value(&response)
-        }
-        NoteSubcommand::List(list) => handle_list_notes(client, server, &list),
-        NoteSubcommand::Search(search) => handle_search_notes(client, server, &search),
-        NoteSubcommand::Show(show) => {
-            let path = note_path(show.note_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
-        NoteSubcommand::Update(update) => {
-            let path = note_path(update.note_id);
-            let request = UpdateNoteRequest {
-                workspace: update.workspace,
-                actor: update.actor,
-                note_id: update.note_id,
-                title: update.title,
-                body: update.body,
-            };
-            let response: serde_json::Value =
-                patch_json(client, server, &path, &request, idempotency_key)?;
-            print_value(&response)
-        }
+    fn fetch_task_dag(&self, task_id: Uuid) -> Result<TaskDag> {
+        let path = task_dag_path(task_id);
+        let response: ApiEnvelope<TaskDag> = self.context.get_json(&path)?;
+        Ok(response.data)
     }
-}
 
-fn handle_memory(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: MemoryCommand,
-) -> Result<()> {
-    match command.command {
-        MemorySubcommand::Add(add) => {
-            let request = CreateMemoryRequest {
-                workspace: add.workspace,
-                author: add.author,
-                title: add.title,
-                body: add.body,
-                kind: parse_memory_kind_input(&add.kind)?,
-                scope: parse_memory_scope_input(&add.scope)?,
-                audience: parse_memory_audience_input(&add.audience)?,
-                importance: parse_memory_importance_input(&add.importance)?,
-                tags: add.tags,
-                recall_triggers: add.recall_triggers,
-            };
-            let response: serde_json::Value =
-                post_json(client, server, "/v1/memories", &request, idempotency_key)?;
-            print_value(&response)
-        }
-        MemorySubcommand::List(list) => handle_list_memories(client, server, &list),
-        MemorySubcommand::Prime(prime) => handle_prime_memories(client, server, &prime),
-        MemorySubcommand::Show(show) => {
-            let path = memory_path(show.memory_id);
-            let response: serde_json::Value = get_json(client, server, &path)?;
-            print_value(&response)
-        }
+    fn fetch_task_summary(&self, task_id: Uuid) -> Result<TaskRecord> {
+        let path = task_path(task_id);
+        let response: ApiEnvelope<TaskRecord> = self.context.get_json(&path)?;
+        Ok(response.data)
     }
-}
 
-fn handle_list_memories(client: &Client, server: &str, memory: &ListMemories) -> Result<()> {
-    let path = memory_list_path(MemoryListPathArgs {
-        audience: memory.audience.as_deref(),
-        importance: memory.importance.as_deref(),
-        kind: memory.kind.as_deref(),
-        limit: memory.limit,
-        query: memory.query.as_deref(),
-        recall_trigger: memory.recall_trigger.as_deref(),
-        tag: memory.tag.as_deref(),
-        workspace: memory.workspace.as_str(),
-    })?;
-    let response: ApiEnvelope<Vec<MemoryRecord>> = get_json(client, server, &path)?;
+    fn handle_task_dependency_view(
+        &mut self,
+        task: &TaskDependencyViewCommand,
+        kind: TaskDependencyViewKind,
+    ) -> Result<()> {
+        let data = if task.direct_only {
+            let context = self.fetch_task_context(task.task_id)?;
+            select_dependency_view_from_context(&context, kind).to_vec()
+        } else {
+            let dag = self.fetch_task_dag(task.task_id)?;
+            select_dependency_view_from_dag(&dag, kind).to_vec()
+        };
 
-    match memory.format {
-        OutputFormat::Compact => {
-            print!("{}", render_memory_list_compact(&response.data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_prime_memories(client: &Client, server: &str, memory: &PrimeMemories) -> Result<()> {
-    let path = memory_prime_path(memory)?;
-    let response: ApiEnvelope<Vec<MemoryRecord>> = get_json(client, server, &path)?;
-
-    match memory.format {
-        OutputFormat::Compact => {
-            print!("{}", render_memory_list_compact(&response.data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_list_notes(client: &Client, server: &str, note: &ListNotes) -> Result<()> {
-    let path = note_list_path(
-        note.workspace.as_str(),
-        note.limit,
-        note.author.as_deref(),
-        None,
-    );
-    let response: ApiEnvelope<Vec<NoteRecord>> = get_json(client, server, &path)?;
-
-    match note.format {
-        OutputFormat::Compact => {
-            print!("{}", render_note_list_compact(&response.data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_search_notes(client: &Client, server: &str, note: &SearchNotes) -> Result<()> {
-    let path = note_list_path(
-        note.workspace.as_str(),
-        note.limit,
-        note.author.as_deref(),
-        Some(note.query.as_str()),
-    );
-    let response: ApiEnvelope<Vec<NoteRecord>> = get_json(client, server, &path)?;
-
-    match note.format {
-        OutputFormat::Compact => {
-            print!("{}", render_note_list_compact(&response.data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_projection(client: &Client, server: &str, command: &ProjectionCommand) -> Result<()> {
-    match command.command {
-        ProjectionSubcommand::Status => {
-            let response: ApiEnvelope<ProjectionStatus> =
-                get_json(client, server, "/v1/projections/graph")?;
-            print_value(&response)
-        }
-    }
-}
-
-fn handle_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    command: TaskCommand,
-) -> Result<()> {
-    match command.command {
-        TaskSubcommand::BlockedBy(task) => {
-            handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::BlockedBy)
-        }
-        TaskSubcommand::Blocks(task) => {
-            handle_task_dependency_view(client, server, &task, TaskDependencyViewKind::Blocks)
-        }
-        TaskSubcommand::ClaimNext(task) => {
-            handle_claim_next_task(client, server, idempotency_key, task)
-        }
-        TaskSubcommand::Claim(task) => handle_claim_task(client, server, idempotency_key, task),
-        TaskSubcommand::Complete(task) => {
-            handle_complete_task(client, server, idempotency_key, task)
-        }
-        TaskSubcommand::Context(task) => handle_task_context(client, server, &task),
-        TaskSubcommand::Dag(task) => handle_task_dag(client, server, &task),
-        TaskSubcommand::Depend(task) => {
-            handle_add_task_dependency(client, server, idempotency_key, task)
-        }
-        TaskSubcommand::List(task) => handle_list_tasks(client, server, &task),
-        TaskSubcommand::Next(task) => handle_next_task(client, server, &task),
-        TaskSubcommand::Offer(task) => handle_offer_task(client, server, idempotency_key, task),
-        TaskSubcommand::Release(task) => handle_release_task(client, server, idempotency_key, task),
-        TaskSubcommand::Show(task) => handle_show_task(client, server, &task),
-        TaskSubcommand::Triage(task) => {
-            let response = triage_tasks(client, server, idempotency_key, &task)?;
-            print_value(&response)
-        }
-        TaskSubcommand::Update(task) => handle_update_task(client, server, idempotency_key, task),
-    }
-}
-
-fn handle_add_task_dependency(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: AddTaskDependency,
-) -> Result<()> {
-    let request = AddTaskDependencyRequest {
-        workspace: task.workspace,
-        actor: task.actor,
-        task_id: task.task_id,
-        depends_on_task_id: task.depends_on,
-    };
-    let response: serde_json::Value = post_json(
-        client,
-        server,
-        &task_dependencies_path(task.task_id),
-        &request,
-        idempotency_key,
-    )?;
-    print_value(&response)
-}
-
-fn handle_claim_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: ClaimTask,
-) -> Result<()> {
-    let request = ClaimTaskRequest {
-        workspace: task.workspace,
-        actor: task.actor,
-        task_id: task.task_id,
-        lease_seconds: task.lease_seconds,
-    };
-    let path = task_claims_path(task.task_id);
-    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
-    print_value(&response)
-}
-
-fn handle_claim_next_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: ClaimNextTask,
-) -> Result<()> {
-    let request = ClaimNextTaskRequest {
-        actor: task.actor,
-        epic_id: task.epic_id,
-        label: task
-            .label
-            .and_then(|value| normalize_task_labels(vec![value]).into_iter().next()),
-        lease_seconds: task.lease_seconds,
-        owner: normalize_task_owner(task.metadata_filters.owner),
-        priority: task
-            .metadata_filters
-            .priority
-            .as_deref()
-            .map(parse_task_priority_input)
-            .transpose()?,
-        workspace: task.workspace,
-    };
-    let response: ApiEnvelope<Option<TaskClaimRecord>> = post_json(
-        client,
-        server,
-        "/v1/tasks/claims/next",
-        &request,
-        idempotency_key,
-    )?;
-    print_value(&response)
-}
-
-fn handle_complete_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: CompleteTask,
-) -> Result<()> {
-    let request = CompleteTaskRequest {
-        workspace: task.workspace,
-        actor: task.actor,
-        task_id: task.task_id,
-    };
-    let path = task_completion_path(task.task_id);
-    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
-    print_value(&response)
-}
-
-fn handle_list_tasks(client: &Client, server: &str, task: &ListTasks) -> Result<()> {
-    let path = task_list_path(task)?;
-    let response: ApiEnvelope<Vec<TaskListEntry>> = get_json(client, server, &path)?;
-
-    match task.format {
-        OutputFormat::Compact => {
-            print!("{}", render_task_list_compact(&response.data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_next_task(client: &Client, server: &str, task: &NextTask) -> Result<()> {
-    let path = task_next_path(task)?;
-    let response: ApiEnvelope<Option<TaskListEntry>> = get_json(client, server, &path)?;
-
-    match task.format {
-        OutputFormat::Compact => {
-            let rendered = response.data.map_or_else(
-                || "no tasks\n".to_owned(),
-                |entry| render_task_list_compact(&[entry]),
-            );
-            print!("{rendered}");
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&response),
-    }
-}
-
-fn handle_offer_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: OfferTask,
-) -> Result<()> {
-    let workspace_policy = fetch_workspace_policy_summary(client, server, &task.workspace)?;
-    let request = OfferTaskRequest {
-        workspace: task.workspace,
-        author: task.author,
-        depends_on: task.depends_on,
-        title: task.title,
-        details: task.details,
-        epic_id: task.epic_id,
-        metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
-    };
-    let response: serde_json::Value =
-        post_json(client, server, "/v1/tasks", &request, idempotency_key)?;
-    print_value(&response)
-}
-
-fn handle_release_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: ReleaseTask,
-) -> Result<()> {
-    let request = ReleaseTaskRequest {
-        workspace: task.workspace,
-        actor: task.actor,
-        task_id: task.task_id,
-    };
-    let path = task_claim_release_path(task.task_id);
-    let response: serde_json::Value = post_json(client, server, &path, &request, idempotency_key)?;
-    print_value(&response)
-}
-
-fn handle_show_task(client: &Client, server: &str, task: &ShowTask) -> Result<()> {
-    let path = task_path(task.task_id);
-    let response: serde_json::Value = get_json(client, server, &path)?;
-    print_value(&response)
-}
-
-fn handle_task_context(client: &Client, server: &str, task: &TaskContextCommand) -> Result<()> {
-    let path = task_context_path(task.task_id);
-    let response: serde_json::Value = get_json(client, server, &path)?;
-    print_value(&response)
-}
-
-fn handle_task_dag(client: &Client, server: &str, task: &TaskDagCommand) -> Result<()> {
-    let path = task_dag_path(task.task_id);
-    let response: serde_json::Value = get_json(client, server, &path)?;
-    print_value(&response)
-}
-
-fn handle_update_task(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: UpdateTask,
-) -> Result<()> {
-    let workspace_policy = fetch_workspace_policy_summary(client, server, &task.workspace)?;
-    let request = UpdateTaskRequest {
-        workspace: task.workspace,
-        actor: task.actor,
-        task_id: task.task_id,
-        title: task.title,
-        details: task.details,
-        epic_id: task.epic_id,
-        metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
-    };
-    let path = task_path(task.task_id);
-    let response: serde_json::Value = patch_json(client, server, &path, &request, idempotency_key)?;
-    print_value(&response)
-}
-
-fn fetch_task_context(client: &Client, server: &str, task_id: Uuid) -> Result<TaskContext> {
-    let path = task_context_path(task_id);
-    let response: ApiEnvelope<TaskContext> = get_json(client, server, &path)?;
-    Ok(response.data)
-}
-
-fn handle_tail_events(client: &Client, server: &str, events: &TailEvents) -> Result<()> {
-    let mut cursor = events.after_event_id;
-
-    loop {
-        let path = events_tail_path(events.workspace.as_str(), events.limit, cursor);
-        let response: ApiEnvelope<Vec<EventRecord>> = get_json(client, server, &path)?;
-        let latest_event_id = response.data.last().map(|event| event.event_id);
-
-        match events.format {
+        match task.format {
             OutputFormat::Compact => {
-                if !response.data.is_empty() {
-                    print!("{}", render_event_list_compact(&response.data));
-                }
-                if response.data.is_empty() && !events.follow {
-                    print!("no events\n");
-                }
+                self.context
+                    .print_compact(&render_task_dependency_compact(&data));
+                Ok(())
             }
-            OutputFormat::Json => print_value(&response)?,
+            OutputFormat::Json => self.context.print_value(&data),
         }
-
-        cursor = latest_event_id.or(cursor);
-        if !events.follow {
-            return Ok(());
-        }
-
-        thread::sleep(Duration::from_secs(events.poll_seconds));
     }
-}
 
-fn fetch_task_dag(client: &Client, server: &str, task_id: Uuid) -> Result<TaskDag> {
-    let path = task_dag_path(task_id);
-    let response: ApiEnvelope<TaskDag> = get_json(client, server, &path)?;
-    Ok(response.data)
-}
+    fn fetch_workspace_policy_summary(&self, workspace: &str) -> Result<WorkspacePolicy> {
+        let response: ApiEnvelope<WorkspacePolicy> =
+            self.context.get_json(&workspace_policy_path(workspace))?;
+        Ok(response.data)
+    }
 
-fn fetch_task_summary(client: &Client, server: &str, task_id: Uuid) -> Result<TaskRecord> {
-    let path = task_path(task_id);
-    let response: ApiEnvelope<TaskRecord> = get_json(client, server, &path)?;
-    Ok(response.data)
-}
+    fn triage_tasks(
+        &self,
+        idempotency_key: Option<&str>,
+        task: &TriageTasks,
+    ) -> Result<TaskTriageSummary> {
+        if !triage_has_changes(task.complete, task.epic_id, &task.metadata) {
+            return Usage {
+                message:
+                    "task triage needs at least --epic-id, --complete, --priority, --owner, --clear-owner, --label, or --clear-labels"
+                        .to_owned(),
+            }
+            .fail();
+        }
 
-fn print_value<T: Serialize>(value: &T) -> Result<()> {
-    let rendered = to_string_pretty(value).context(JsonRender)?;
-    println!("{rendered}");
-    Ok(())
+        let task_ids = dedup_task_ids(&task.task_id);
+        let mut completed_task_ids = Vec::new();
+        let mut unchanged_task_ids = Vec::new();
+        let mut updated_task_ids = Vec::new();
+
+        for task_id in &task_ids {
+            let task_record = self.fetch_task_summary(*task_id)?;
+            let next_metadata = apply_metadata_patch(&task_record.metadata, &task.metadata)?;
+            let outcome = self.triage_task_record(
+                idempotency_key,
+                task,
+                *task_id,
+                &task_record,
+                &next_metadata,
+            )?;
+
+            if outcome.updated {
+                updated_task_ids.push(*task_id);
+            }
+            if outcome.completed {
+                completed_task_ids.push(*task_id);
+            }
+            if !outcome.changed {
+                unchanged_task_ids.push(*task_id);
+            }
+        }
+
+        Ok(TaskTriageSummary {
+            clear_labels: task.metadata.clear_labels,
+            clear_owner: task.metadata.clear_owner,
+            completed_task_ids,
+            epic_id: task.epic_id,
+            labels: triage_summary_labels(&task.metadata),
+            owner: triage_summary_owner(&task.metadata),
+            priority: task
+                .metadata
+                .priority
+                .as_deref()
+                .map(parse_task_priority_input)
+                .transpose()?,
+            task_ids,
+            unchanged_task_ids,
+            updated_task_ids,
+            workspace: task.workspace.clone(),
+        })
+    }
+
+    fn triage_task_record(
+        &self,
+        idempotency_key: Option<&str>,
+        task: &TriageTasks,
+        task_id: Uuid,
+        task_record: &TaskRecord,
+        next_metadata: &TaskMetadata,
+    ) -> Result<TaskTriageOutcome> {
+        let mut outcome = TaskTriageOutcome::default();
+
+        if let Some(epic_id) = task.epic_id {
+            if task_record.epic_id != Some(epic_id) {
+                let request = UpdateTaskRequest {
+                    workspace: task.workspace.clone(),
+                    actor: task.actor.clone(),
+                    task_id,
+                    title: task_record.title.clone(),
+                    details: task_record.details.clone(),
+                    epic_id: Some(epic_id),
+                    metadata: next_metadata.clone(),
+                };
+                let request_key = idempotency_key
+                    .map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
+                let _: serde_json::Value =
+                    self.context.patch_json(&task_path(task_id), &request, request_key.as_deref())?;
+                outcome.changed = true;
+                outcome.updated = true;
+            }
+        }
+
+        if !outcome.changed && task_metadata_changed(&task_record.metadata, next_metadata) {
+            let request = UpdateTaskRequest {
+                workspace: task.workspace.clone(),
+                actor: task.actor.clone(),
+                task_id,
+                title: task_record.title.clone(),
+                details: task_record.details.clone(),
+                epic_id: task_record.epic_id,
+                metadata: next_metadata.clone(),
+            };
+            let request_key =
+                idempotency_key.map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
+            let _: serde_json::Value =
+                self.context.patch_json(&task_path(task_id), &request, request_key.as_deref())?;
+            outcome.changed = true;
+            outcome.updated = true;
+        }
+
+        if task.complete && task_record.status != "completed" {
+            let request = CompleteTaskRequest {
+                workspace: task.workspace.clone(),
+                actor: task.actor.clone(),
+                task_id,
+            };
+            let request_key =
+                idempotency_key.map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
+            let _: serde_json::Value = self.context.post_json(
+                &task_completion_path(task_id),
+                &request,
+                request_key.as_deref(),
+            )?;
+            outcome.changed = true;
+            outcome.completed = true;
+        }
+
+        Ok(outcome)
+    }
 }
 
 pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<String> {
@@ -1860,29 +2003,6 @@ fn compact_labels_label(entry: &TaskListEntry) -> String {
     }
 
     format!("labels={}", entry.task.metadata.labels.join(","))
-}
-
-fn handle_task_dependency_view(
-    client: &Client,
-    server: &str,
-    task: &TaskDependencyViewCommand,
-    kind: TaskDependencyViewKind,
-) -> Result<()> {
-    let data = if task.direct_only {
-        let context = fetch_task_context(client, server, task.task_id)?;
-        select_dependency_view_from_context(&context, kind).to_vec()
-    } else {
-        let dag = fetch_task_dag(client, server, task.task_id)?;
-        select_dependency_view_from_dag(&dag, kind).to_vec()
-    };
-
-    match task.format {
-        OutputFormat::Compact => {
-            print!("{}", render_task_dependency_compact(&data));
-            Ok(())
-        }
-        OutputFormat::Json => print_value(&data),
-    }
 }
 
 pub(crate) fn render_task_list_compact(entries: &[TaskListEntry]) -> String {
@@ -2343,16 +2463,6 @@ fn workspace_keys_path(workspace: &str, actor_id: Option<&str>) -> String {
     format!("/v1/workspaces/{workspace}/keys")
 }
 
-fn fetch_workspace_policy_summary(
-    client: &Client,
-    server: &str,
-    workspace: &str,
-) -> Result<WorkspacePolicy> {
-    let response: ApiEnvelope<WorkspacePolicy> =
-        get_json(client, server, &workspace_policy_path(workspace))?;
-    Ok(response.data)
-}
-
 fn parse_task_priority_input(input: &str) -> Result<TaskPriority> {
     TaskPriority::new(input).ok_or_else(|| {
         Usage {
@@ -2500,151 +2610,6 @@ fn select_dependency_view_from_dag(
     }
 }
 
-fn triage_tasks(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: &TriageTasks,
-) -> Result<TaskTriageSummary> {
-    if !triage_has_changes(task.complete, task.epic_id, &task.metadata) {
-        return Usage {
-            message:
-                "task triage needs at least --epic-id, --complete, --priority, --owner, --clear-owner, --label, or --clear-labels"
-                    .to_owned(),
-        }
-        .fail();
-    }
-
-    let task_ids = dedup_task_ids(&task.task_id);
-    let mut completed_task_ids = Vec::new();
-    let mut unchanged_task_ids = Vec::new();
-    let mut updated_task_ids = Vec::new();
-
-    for task_id in &task_ids {
-        let task_record = fetch_task_summary(client, server, *task_id)?;
-        let next_metadata = apply_metadata_patch(&task_record.metadata, &task.metadata)?;
-        let outcome = triage_task_record(
-            client,
-            server,
-            idempotency_key,
-            task,
-            *task_id,
-            &task_record,
-            &next_metadata,
-        )?;
-
-        if outcome.updated {
-            updated_task_ids.push(*task_id);
-        }
-        if outcome.completed {
-            completed_task_ids.push(*task_id);
-        }
-        if !outcome.changed {
-            unchanged_task_ids.push(*task_id);
-        }
-    }
-
-    Ok(TaskTriageSummary {
-        clear_labels: task.metadata.clear_labels,
-        clear_owner: task.metadata.clear_owner,
-        completed_task_ids,
-        epic_id: task.epic_id,
-        labels: triage_summary_labels(&task.metadata),
-        owner: triage_summary_owner(&task.metadata),
-        priority: task
-            .metadata
-            .priority
-            .as_deref()
-            .map(parse_task_priority_input)
-            .transpose()?,
-        task_ids,
-        unchanged_task_ids,
-        updated_task_ids,
-        workspace: task.workspace.clone(),
-    })
-}
-
-fn triage_task_record(
-    client: &Client,
-    server: &str,
-    idempotency_key: Option<&str>,
-    task: &TriageTasks,
-    task_id: Uuid,
-    task_record: &TaskRecord,
-    next_metadata: &TaskMetadata,
-) -> Result<TaskTriageOutcome> {
-    let mut outcome = TaskTriageOutcome::default();
-
-    if let Some(epic_id) = task.epic_id {
-        if task_record.epic_id != Some(epic_id) {
-            let request = UpdateTaskRequest {
-                workspace: task.workspace.clone(),
-                actor: task.actor.clone(),
-                task_id,
-                title: task_record.title.clone(),
-                details: task_record.details.clone(),
-                epic_id: Some(epic_id),
-                metadata: next_metadata.clone(),
-            };
-            let request_key =
-                idempotency_key.map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
-            let _: serde_json::Value = patch_json(
-                client,
-                server,
-                &task_path(task_id),
-                &request,
-                request_key.as_deref(),
-            )?;
-            outcome.changed = true;
-            outcome.updated = true;
-        }
-    }
-
-    if !outcome.changed && task_metadata_changed(&task_record.metadata, next_metadata) {
-        let request = UpdateTaskRequest {
-            workspace: task.workspace.clone(),
-            actor: task.actor.clone(),
-            task_id,
-            title: task_record.title.clone(),
-            details: task_record.details.clone(),
-            epic_id: task_record.epic_id,
-            metadata: next_metadata.clone(),
-        };
-        let request_key =
-            idempotency_key.map(|root_key| format!("{root_key}:triage-update-meta:{task_id}"));
-        let _: serde_json::Value = patch_json(
-            client,
-            server,
-            &task_path(task_id),
-            &request,
-            request_key.as_deref(),
-        )?;
-        outcome.changed = true;
-        outcome.updated = true;
-    }
-
-    if task.complete && task_record.status != "completed" {
-        let request = CompleteTaskRequest {
-            workspace: task.workspace.clone(),
-            actor: task.actor.clone(),
-            task_id,
-        };
-        let request_key =
-            idempotency_key.map(|root_key| format!("{root_key}:triage-complete:{task_id}"));
-        let _: serde_json::Value = post_json(
-            client,
-            server,
-            &task_completion_path(task_id),
-            &request,
-            request_key.as_deref(),
-        )?;
-        outcome.changed = true;
-        outcome.completed = true;
-    }
-
-    Ok(outcome)
-}
-
 pub(crate) fn dedup_task_ids(task_ids: &[Uuid]) -> Vec<Uuid> {
     task_ids
         .iter()
@@ -2736,4 +2701,330 @@ pub(crate) fn triage_has_changes(
         || metadata.owner.is_some()
         || metadata.clear_labels
         || !metadata.label.is_empty()
+}
+
+#[cfg(test)]
+mod execution_tests {
+    #![expect(
+        clippy::panic,
+        reason = "Test-only fakes use explicit panic messages for fixture setup failures."
+    )]
+
+    use std::path::PathBuf;
+
+    use alloc::collections::BTreeMap;
+    use core::{cell::RefCell, time::Duration};
+    use serde::{de::DeserializeOwned, Serialize};
+    use serde_json::{json, Value};
+
+    use super::*;
+    use crate::runtime::{ApiClient, CommandContext, CommandOutput, Sleeper};
+    use threadplane_core::{
+        build_info, CliConfig, PublicKeyAlgorithm, ServerConfig, ServiceSnapshot,
+        TaskSummary, WorkspaceAuthPolicy, WorkspaceBootstrapConfig,
+        WorkspaceBootstrapMembershipConfig, WorkspaceBootstrapPublicKeyConfig,
+    };
+
+    #[derive(Default)]
+    struct FakeApi {
+        gets: BTreeMap<String, Value>,
+        requests: RefCell<Vec<String>>,
+    }
+
+    impl FakeApi {
+        fn with_get_response<T>(mut self, path: &str, value: &T) -> Self
+        where
+            T: Serialize,
+        {
+            let serialized = match serde_json::to_value(value) {
+                Ok(serialized) => serialized,
+                Err(error) => panic!("serializable fake response: {error}"),
+            };
+            self.gets.insert(path.to_owned(), serialized);
+            self
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.borrow().clone()
+        }
+    }
+
+    impl ApiClient for FakeApi {
+        fn get_json<T>(&self, path: &str) -> Result<T>
+        where
+            T: DeserializeOwned,
+        {
+            self.requests.borrow_mut().push(format!("GET {path}"));
+            let value = self.gets.get(path).cloned().ok_or_else(|| {
+                Usage {
+                    message: format!("missing fake GET response for {path}"),
+                }
+                .build()
+            })?;
+
+            serde_json::from_value(value).map_err(|source| {
+                Usage {
+                    message: format!("failed to deserialize fake GET response for {path}: {source}"),
+                }
+                .build()
+            })
+        }
+
+        fn patch_json<B, T>(&self, path: &str, _body: &B, _idempotency_key: Option<&str>) -> Result<T>
+        where
+            B: Serialize,
+            T: DeserializeOwned,
+        {
+            Err(Usage {
+                message: format!("unexpected fake PATCH {path}"),
+            }
+            .build())
+        }
+
+        fn post_json<B, T>(&self, path: &str, _body: &B, _idempotency_key: Option<&str>) -> Result<T>
+        where
+            B: Serialize,
+            T: DeserializeOwned,
+        {
+            Err(Usage {
+                message: format!("unexpected fake POST {path}"),
+            }
+            .build())
+        }
+
+        fn put_json<B, T>(&self, path: &str, _body: &B, _idempotency_key: Option<&str>) -> Result<T>
+        where
+            B: Serialize,
+            T: DeserializeOwned,
+        {
+            Err(Usage {
+                message: format!("unexpected fake PUT {path}"),
+            }
+            .build())
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeOutput {
+        rendered: String,
+        warnings: Vec<String>,
+    }
+
+    impl CommandOutput for FakeOutput {
+        fn print(&mut self, text: &str) {
+            self.rendered.push_str(text);
+        }
+
+        fn print_warning(&mut self, text: &str) {
+            self.warnings.push(text.to_owned());
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingSleeper {
+        sleeps: RefCell<Vec<Duration>>,
+    }
+
+    impl RecordingSleeper {
+        fn sleeps(&self) -> Vec<Duration> {
+            self.sleeps.borrow().clone()
+        }
+    }
+
+    impl Sleeper for RecordingSleeper {
+        fn sleep(&self, duration: Duration) {
+            self.sleeps.borrow_mut().push(duration);
+        }
+    }
+
+    #[test]
+    fn execute_scope_uses_fake_ports_and_emits_build_warning() {
+        let api = FakeApi::default()
+            .with_get_response("/scope", &json!({"ok": true, "summary": "scope"}))
+            .with_get_response(
+                "/",
+                &ServiceSnapshot {
+                    build: build_info(
+                        "threadplane-server",
+                        "9.9.9",
+                        "release",
+                        Some("bbbbbbbbbbbb"),
+                        false,
+                    ),
+                    event_kinds: Vec::new(),
+                    graph_projection: "neo4j".to_owned(),
+                    name: "threadplane".to_owned(),
+                    source_of_truth: "postgres".to_owned(),
+                    summary: "shared memory".to_owned(),
+                    tuple_space: "lease-backed".to_owned(),
+                },
+            );
+        let mut output = FakeOutput::default();
+        let sleeper = RecordingSleeper::default();
+        let config = sample_config();
+        let discovery = sample_discovery();
+        let mut context = CommandContext::builder()
+            .api(&api)
+            .output(&mut output)
+            .sleeper(&sleeper)
+            .build();
+
+        if let Err(error) = execute(
+            Cli {
+                command: Command::Scope,
+                config: None,
+                idempotency_key: None,
+                server: None,
+            },
+            &config,
+            &discovery,
+            &mut context,
+        ) {
+            panic!("scope command succeeds: {error}");
+        }
+
+        assert_eq!(api.requests(), vec!["GET /scope", "GET /"]);
+        assert!(output.rendered.contains("\"summary\": \"scope\""));
+        assert_eq!(output.warnings.len(), 1);
+        let first_warning = output.warnings.first().cloned().unwrap_or_default();
+        assert!(first_warning.contains("warning:"));
+        assert!(sleeper.sleeps().is_empty());
+    }
+
+    #[test]
+    fn execute_next_task_renders_compact_output_through_runtime() {
+        let task_id = Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap_or_default();
+        let api = FakeApi::default().with_get_response(
+            "/v1/workspaces/threadplane-dev/tasks/next?status=open&ready_only=true",
+            &ApiEnvelope {
+                ok: true,
+                data: Some(TaskListEntry {
+                    active_claim: None,
+                    dependencies: Vec::new(),
+                    dependents: Vec::new(),
+                    epic: None,
+                    ready: true,
+                    task: TaskSummary {
+                        author: "codex".to_owned(),
+                        created_at: "2026-03-18T00:00:00Z".to_owned(),
+                        details: "Keep work flowing.".to_owned(),
+                        entity_ref: format!("task:{task_id}"),
+                        epic_id: None,
+                        metadata: TaskMetadata {
+                            labels: vec!["workflow".to_owned()],
+                            owner: Some("codex".to_owned()),
+                            priority: TaskPriority::from_lossy("high"),
+                        },
+                        status: "open".to_owned(),
+                        task_id,
+                        title: "Pick next ready task".to_owned(),
+                        transclusion_id: None,
+                        updated_at: "2026-03-18T00:00:00Z".to_owned(),
+                        workspace: "threadplane-dev".to_owned(),
+                    },
+                }),
+                receipt: None,
+            },
+        );
+        let mut output = FakeOutput::default();
+        let sleeper = RecordingSleeper::default();
+        let config = sample_config();
+        let discovery = sample_discovery();
+        let mut context = CommandContext::builder()
+            .api(&api)
+            .output(&mut output)
+            .sleeper(&sleeper)
+            .build();
+
+        if let Err(error) = execute(
+            Cli {
+                command: Command::Task(TaskCommand {
+                    command: TaskSubcommand::Next(NextTask {
+                        epic_id: None,
+                        format: OutputFormat::Compact,
+                        label: None,
+                        metadata_filters: TaskMetadataFilterArgs::default(),
+                        workspace: "threadplane-dev".to_owned(),
+                    }),
+                }),
+                config: None,
+                idempotency_key: None,
+                server: None,
+            },
+            &config,
+            &discovery,
+            &mut context,
+        ) {
+            panic!("next task command succeeds: {error}");
+        }
+
+        assert_eq!(
+            api.requests(),
+            vec!["GET /v1/workspaces/threadplane-dev/tasks/next?status=open&ready_only=true"]
+        );
+        assert!(output.rendered.contains("Pick next ready task"));
+        assert!(output.rendered.contains("priority=high"));
+        assert!(sleeper.sleeps().is_empty());
+    }
+
+    fn sample_config() -> ThreadplaneConfig {
+        ThreadplaneConfig {
+            cli: CliConfig {
+                url: "http://127.0.0.1:4000".to_owned(),
+            },
+            server: ServerConfig {
+                bind: "127.0.0.1:4000".to_owned(),
+                database_url: "postgres://threadplane:test@127.0.0.1/threadplane".to_owned(),
+                default_lease_seconds: 120,
+                neo4j_password: "test".to_owned(),
+                neo4j_uri: "bolt://127.0.0.1:7687".to_owned(),
+                neo4j_user: "neo4j".to_owned(),
+                workspace_bootstrap: WorkspaceBootstrapConfig {
+                    auth: WorkspaceAuthPolicy {
+                        allowed_algorithms: vec![
+                            PublicKeyAlgorithm::Ed25519,
+                            PublicKeyAlgorithm::SshEd25519,
+                        ],
+                        challenge_ttl_seconds: 300,
+                        signed_commands_required: false,
+                    },
+                    memberships: vec![WorkspaceBootstrapMembershipConfig {
+                        actor_id: "operator".to_owned(),
+                        role: WorkspaceRole::Admin,
+                    }],
+                    priorities: WorkspacePriorityPolicy {
+                        default_priority: "medium".to_owned(),
+                        priorities: vec![
+                            WorkspacePriority {
+                                description: Some("Important".to_owned()),
+                                name: "high".to_owned(),
+                                rank: 10,
+                            },
+                            WorkspacePriority {
+                                description: Some("Normal".to_owned()),
+                                name: "medium".to_owned(),
+                                rank: 20,
+                            },
+                        ],
+                    },
+                    public_keys: vec![WorkspaceBootstrapPublicKeyConfig {
+                        actor_id: "operator".to_owned(),
+                        algorithm: PublicKeyAlgorithm::Ed25519,
+                        key_id: "operator-main".to_owned(),
+                        public_key: "ed25519:test".to_owned(),
+                    }],
+                },
+            },
+        }
+    }
+
+    fn sample_discovery() -> ConfigDiscovery {
+        ConfigDiscovery {
+            env_override: None,
+            env_prefix: "THREADPLANE",
+            explicit_override: None,
+            search_order: vec![PathBuf::from("/tmp/threadplane/config.toml")],
+            selected_path: Some(PathBuf::from("/tmp/threadplane/config.toml")),
+        }
+    }
 }

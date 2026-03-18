@@ -5,6 +5,7 @@ pub(crate) mod build_info;
 pub(crate) mod command;
 pub(crate) mod error;
 pub(crate) mod http;
+pub(crate) mod runtime;
 
 #[cfg(test)]
 mod tests;
