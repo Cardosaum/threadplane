@@ -8,6 +8,7 @@ use axum::{
     http::HeaderMap,
     Json,
 };
+use bon::builder;
 use chrono::{DateTime, Utc};
 use core::future::Future;
 use serde::Deserialize;
@@ -191,11 +192,12 @@ async fn ensure_workspace_policy(
     ensure_workspace_governance(pool, workspace, bootstrap).await
 }
 
+#[builder]
 async fn require_workspace_editor(
-    pool: &PgPool,
-    bootstrap: &WorkspaceGovernanceBootstrap,
-    workspace: &str,
     actor: &str,
+    bootstrap: &WorkspaceGovernanceBootstrap,
+    pool: &PgPool,
+    workspace: &str,
 ) -> ServerResult<WorkspaceRole> {
     ensure_workspace_policy(pool, bootstrap, workspace).await?;
     require_workspace_role(
@@ -208,11 +210,12 @@ async fn require_workspace_editor(
     .await
 }
 
+#[builder]
 async fn require_workspace_admin(
-    pool: &PgPool,
-    bootstrap: &WorkspaceGovernanceBootstrap,
-    workspace: &str,
     actor: &str,
+    bootstrap: &WorkspaceGovernanceBootstrap,
+    pool: &PgPool,
+    workspace: &str,
 ) -> ServerResult<WorkspaceRole> {
     ensure_workspace_policy(pool, bootstrap, workspace).await?;
     require_workspace_role(
@@ -225,11 +228,12 @@ async fn require_workspace_admin(
     .await
 }
 
+#[builder]
 async fn ensure_supported_task_priority(
-    pool: &PgPool,
     bootstrap: &WorkspaceGovernanceBootstrap,
-    workspace: &str,
+    pool: &PgPool,
     priority: &TaskPriority,
+    workspace: &str,
 ) -> ServerResult<()> {
     ensure_workspace_policy(pool, bootstrap, workspace).await?;
     if workspace_supports_priority(pool, workspace, priority).await? {
@@ -308,12 +312,13 @@ async fn persist_task_update(
     Ok(None)
 }
 
+#[builder]
 async fn persist_offered_task(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    created_at: DateTime<Utc>,
+    event_id: Uuid,
     request: &OfferTaskRequest,
     task_id: Uuid,
-    event_id: Uuid,
-    created_at: DateTime<Utc>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> ServerResult<()> {
     sqlx::query(
         "
@@ -377,12 +382,13 @@ async fn advance_graph_projection_cursor(
     Ok(())
 }
 
+#[builder]
 async fn project_graph_event<Output, Operation>(
+    event_id: Uuid,
+    operation: Operation,
     pool: &PgPool,
     projection_coordinator: &ProjectionCoordinator,
     workspace: &str,
-    event_id: Uuid,
-    operation: Operation,
 ) -> ServerResult<Output>
 where
     Operation: Future<Output = ServerResult<Output>>,
@@ -408,14 +414,15 @@ async fn ensure_task_is_unclaimed(
     Ok(())
 }
 
+#[builder]
 async fn persist_task_claim(
+    actor: &str,
+    claimed_at: DateTime<Utc>,
+    lease_seconds: i64,
+    payload: &Value,
+    task_id: Uuid,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace: &str,
-    actor: &str,
-    task_id: Uuid,
-    lease_seconds: i64,
-    claimed_at: DateTime<Utc>,
-    payload: &Value,
 ) -> ServerResult<(TaskClaimRecord, TaskRow)> {
     fetch_task_by_id_tx(tx, task_id, workspace).await?;
     ensure_task_is_unclaimed(tx, task_id).await?;
@@ -502,12 +509,20 @@ async fn project_task_record(graph: &Graph, pool: &PgPool, record: &TaskRecord) 
     })
 }
 
+async fn project_memory_record(graph: &Graph, record: &MemoryRecord) -> ServerResult<()> {
+    project_memory(graph, record).await.map_err(|error| {
+        error!(?error, memory_id = %record.memory_id, "failed to project memory");
+        ThreadplaneServerError::internal(error)
+    })
+}
+
+#[builder]
 async fn project_claimed_task_record(
+    claim: &TaskClaimRecord,
     graph: &Graph,
     pool: &PgPool,
     task: &TaskRow,
     task_record: &TaskRecord,
-    claim: &TaskClaimRecord,
 ) -> ServerResult<()> {
     project_task_record(graph, pool, task_record).await?;
     project_claim(graph, task, claim)
@@ -544,12 +559,13 @@ fn build_xanadu_event_payload(
     })
 }
 
+#[builder]
 async fn persist_xanadu_link(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    request: &CreateXanaduLinkRequest,
-    event_id: Uuid,
     canonical_group_id: Uuid,
     created_at: DateTime<Utc>,
+    event_id: Uuid,
+    request: &CreateXanaduLinkRequest,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
 ) -> ServerResult<LinkRecord> {
     let link_id = Uuid::new_v4();
     sqlx::query(
@@ -625,7 +641,12 @@ pub(crate) async fn create_epic(
     headers: HeaderMap,
     Json(request): Json<CreateEpicRequest>,
 ) -> AppResult<EpicRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.author)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let epic_id = Uuid::new_v4();
@@ -688,18 +709,18 @@ pub(crate) async fn create_epic(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(async {
             project_epic(state.graph(), &record)
                 .await
                 .map_err(ThreadplaneServerError::internal)
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -743,15 +764,19 @@ pub(crate) async fn create_memory(
     headers: HeaderMap,
     Json(request): Json<CreateMemoryRequest>,
 ) -> AppResult<MemoryRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.author)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let memory_id = Uuid::new_v4();
     let created_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
     let normalized_tags = normalize_memory_tags(request.tags.clone());
-    let normalized_recall_triggers =
-        normalize_memory_recall_triggers(request.recall_triggers.clone());
+    let normalized_recall_triggers = normalize_memory_recall_triggers(request.recall_triggers.clone());
     let pending_receipt = match begin_idempotent_command::<MemoryRecord>(
         &mut tx,
         IdempotencyContext {
@@ -823,21 +848,14 @@ pub(crate) async fn create_memory(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(async {
-            project_memory(state.graph(), &record)
-                .await
-                .map_err(|error| {
-                    error!(?error, memory_id = %record.memory_id, "failed to project memory");
-                    ThreadplaneServerError::internal(error)
-                })
-        }),
-    )
-    .await?;
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(project_memory_record(state.graph(), &record)))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -913,7 +931,12 @@ pub(crate) async fn create_note(
     headers: HeaderMap,
     Json(request): Json<CreateNoteRequest>,
 ) -> AppResult<NoteRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.author)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let note_id = Uuid::new_v4();
@@ -977,19 +1000,19 @@ pub(crate) async fn create_note(
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(async {
             project_note(state.graph(), &record).await.map_err(|error| {
                 error!(?error, note_id = %record.note_id, "failed to project note");
                 ThreadplaneServerError::internal(error)
             })
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1029,7 +1052,12 @@ pub(crate) async fn update_note(
     headers: HeaderMap,
     Json(request): Json<UpdateNoteRequest>,
 ) -> AppResult<NoteRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
@@ -1101,12 +1129,12 @@ pub(crate) async fn update_note(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &request.workspace,
-        event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&request.workspace)
+        .event_id(event_id)
+        .operation(Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(state.graph(), state.pool(), group_id, None)
                     .await
@@ -1116,9 +1144,9 @@ pub(crate) async fn update_note(
                     .await
                     .map_err(ThreadplaneServerError::internal)
             }
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -1129,15 +1157,20 @@ pub(crate) async fn offer_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.author)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.author)
+        .call()
         .await?;
-    ensure_supported_task_priority(
-        state.pool(),
-        state.bootstrap(),
-        &request.workspace,
-        &request.metadata.priority,
-    )
-    .await?;
+    ensure_supported_task_priority()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .priority(&request.metadata.priority)
+        .call()
+        .await?;
     let mut tx = state.pool().begin().await?;
     if let Some(epic_id) = request.epic_id {
         fetch_epic_by_id_tx(&mut tx, epic_id, &request.workspace).await?;
@@ -1173,19 +1206,26 @@ pub(crate) async fn offer_task(
         created_at,
     )
     .await?;
-    persist_offered_task(&mut tx, &request, task_id, event_id, created_at).await?;
+    persist_offered_task()
+        .tx(&mut tx)
+        .request(&request)
+        .task_id(task_id)
+        .event_id(event_id)
+        .created_at(created_at)
+        .call()
+        .await?;
     let record = TaskRecord::from(fetch_task_by_id_tx(&mut tx, task_id, &request.workspace).await?);
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
-    )
-    .await?;
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1197,15 +1237,20 @@ pub(crate) async fn update_task(
 ) -> AppResult<TaskRecord> {
     request.metadata.labels = normalize_task_labels(request.metadata.labels);
     request.metadata.owner = normalize_task_owner(request.metadata.owner);
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
-    ensure_supported_task_priority(
-        state.pool(),
-        state.bootstrap(),
-        &request.workspace,
-        &request.metadata.priority,
-    )
-    .await?;
+    ensure_supported_task_priority()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .priority(&request.metadata.priority)
+        .call()
+        .await?;
     let mut tx = state.pool().begin().await?;
     let updated_at = Utc::now();
     let payload = serde_json::to_value(&request)?;
@@ -1250,12 +1295,12 @@ pub(crate) async fn update_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, updated_at).await?;
     tx.commit().await?;
 
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &request.workspace,
-        event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&request.workspace)
+        .event_id(event_id)
+        .operation(Box::pin(async {
             if let Some(group_id) = transclusion_id {
                 reproject_transclusion_group(state.graph(), state.pool(), group_id, None)
                     .await
@@ -1264,9 +1309,9 @@ pub(crate) async fn update_task(
             }
 
             project_task_record(state.graph(), state.pool(), &record).await
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
     Ok(success_with_receipt(record, receipt))
 }
 
@@ -1275,7 +1320,12 @@ pub(crate) async fn claim_task(
     headers: HeaderMap,
     Json(request): Json<ClaimTaskRequest>,
 ) -> AppResult<TaskClaimRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
@@ -1302,34 +1352,36 @@ pub(crate) async fn claim_task(
         }
     };
 
-    let (record, task) = persist_task_claim(
-        &mut tx,
-        &request.workspace,
-        &request.actor,
-        request.task_id,
-        lease_seconds,
-        claimed_at,
-        &payload,
-    )
-    .await?;
+    let (record, task) = persist_task_claim()
+        .tx(&mut tx)
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .task_id(request.task_id)
+        .lease_seconds(lease_seconds)
+        .claimed_at(claimed_at)
+        .payload(&payload)
+        .call()
+        .await?;
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, claimed_at).await?;
     tx.commit().await?;
     let task_record = TaskRecord::from(task.clone());
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(project_claimed_task_record(
-            state.graph(),
-            state.pool(),
-            &task,
-            &task_record,
-            &record,
-        )),
-    )
-    .await?;
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(
+            project_claimed_task_record()
+                .graph(state.graph())
+                .pool(state.pool())
+                .task(&task)
+                .task_record(&task_record)
+                .claim(&record)
+                .call(),
+        ))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1339,7 +1391,12 @@ pub(crate) async fn release_task(
     headers: HeaderMap,
     Json(request): Json<ReleaseTaskRequest>,
 ) -> AppResult<TaskRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let released_at = Utc::now();
@@ -1416,14 +1473,14 @@ pub(crate) async fn release_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, released_at)
             .await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &request.workspace,
-        event_id,
-        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
-    )
-    .await?;
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&request.workspace)
+        .event_id(event_id)
+        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1433,7 +1490,12 @@ pub(crate) async fn complete_task(
     headers: HeaderMap,
     Json(request): Json<CompleteTaskRequest>,
 ) -> AppResult<TaskRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let completed_at = Utc::now();
@@ -1508,14 +1570,14 @@ pub(crate) async fn complete_task(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, completed_at)
             .await?;
     tx.commit().await?;
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &request.workspace,
-        event_id,
-        Box::pin(project_task_record(state.graph(), state.pool(), &record)),
-    )
-    .await?;
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&request.workspace)
+        .event_id(event_id)
+        .operation(Box::pin(project_task_record(state.graph(), state.pool(), &record)))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1525,7 +1587,12 @@ pub(crate) async fn add_task_dependency(
     headers: HeaderMap,
     Json(request): Json<AddTaskDependencyRequest>,
 ) -> AppResult<Value> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
@@ -1567,12 +1634,12 @@ pub(crate) async fn add_task_dependency(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &data, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &request.workspace,
-        event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&request.workspace)
+        .event_id(event_id)
+        .operation(Box::pin(async {
             project_task_dependency_by_id(
                 state.graph(),
                 state.pool(),
@@ -1581,9 +1648,9 @@ pub(crate) async fn add_task_dependency(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(data, receipt))
 }
@@ -1593,7 +1660,12 @@ pub(crate) async fn add_link(
     headers: HeaderMap,
     Json(request): Json<AddLinkRequest>,
 ) -> AppResult<LinkRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
@@ -1671,19 +1743,19 @@ pub(crate) async fn add_link(
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(async {
             project_link(state.graph(), &record).await.map_err(|error| {
                 error!(?error, link_id = %record.link_id, "failed to project link");
                 ThreadplaneServerError::internal(error)
             })
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1693,7 +1765,12 @@ pub(crate) async fn add_xanadu_link(
     headers: HeaderMap,
     Json(request): Json<CreateXanaduLinkRequest>,
 ) -> AppResult<LinkRecord> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     let mut tx = state.pool().begin().await?;
     let created_at = Utc::now();
@@ -1732,24 +1809,24 @@ pub(crate) async fn add_xanadu_link(
         created_at,
     )
     .await?;
-    let record = persist_xanadu_link(
-        &mut tx,
-        &request,
-        event_id,
-        xanadu_group.canonical_group_id,
-        created_at,
-    )
-    .await?;
+    let record = persist_xanadu_link()
+        .tx(&mut tx)
+        .request(&request)
+        .event_id(event_id)
+        .canonical_group_id(xanadu_group.canonical_group_id)
+        .created_at(created_at)
+        .call()
+        .await?;
     let receipt =
         complete_idempotent_command(&mut tx, pending_receipt.as_ref(), &record, created_at).await?;
     tx.commit().await?;
 
-    project_graph_event(
-        state.pool(),
-        state.projection_coordinator(),
-        &record.workspace,
-        record.event_id,
-        Box::pin(async {
+    project_graph_event()
+        .pool(state.pool())
+        .projection_coordinator(state.projection_coordinator())
+        .workspace(&record.workspace)
+        .event_id(record.event_id)
+        .operation(Box::pin(async {
             reproject_transclusion_group(
                 state.graph(),
                 state.pool(),
@@ -1758,9 +1835,9 @@ pub(crate) async fn add_xanadu_link(
             )
             .await
             .map_err(ThreadplaneServerError::internal)
-        }),
-    )
-    .await?;
+        }))
+        .call()
+        .await?;
 
     Ok(success_with_receipt(record, receipt))
 }
@@ -1824,7 +1901,13 @@ pub(crate) async fn update_workspace_policy(
         ));
     }
 
-    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
+    require_workspace_admin()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&workspace)
+        .actor(&request.actor)
+        .call()
+        .await?;
     let data = upsert_workspace_policy(
         state.pool(),
         &WorkspacePolicy {
@@ -1858,7 +1941,13 @@ pub(crate) async fn grant_workspace_membership(
         ));
     }
 
-    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
+    require_workspace_admin()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&workspace)
+        .actor(&request.actor)
+        .call()
+        .await?;
     let data = upsert_workspace_membership(
         state.pool(),
         &WorkspaceMembership {
@@ -1893,7 +1982,13 @@ pub(crate) async fn add_workspace_public_key(
         ));
     }
 
-    require_workspace_admin(state.pool(), state.bootstrap(), &workspace, &request.actor).await?;
+    require_workspace_admin()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&workspace)
+        .actor(&request.actor)
+        .call()
+        .await?;
     let data = upsert_actor_public_key(
         state.pool(),
         &workspace,
@@ -1970,16 +2065,21 @@ pub(crate) async fn claim_next_task(
     headers: HeaderMap,
     Json(request): Json<ClaimNextTaskRequest>,
 ) -> AppResult<Option<TaskClaimRecord>> {
-    require_workspace_editor(state.pool(), state.bootstrap(), &request.workspace, &request.actor)
+    require_workspace_editor()
+        .pool(state.pool())
+        .bootstrap(state.bootstrap())
+        .workspace(&request.workspace)
+        .actor(&request.actor)
+        .call()
         .await?;
     if let Some(priority) = &request.priority {
-        ensure_supported_task_priority(
-            state.pool(),
-            state.bootstrap(),
-            &request.workspace,
-            priority,
-        )
-        .await?;
+        ensure_supported_task_priority()
+            .pool(state.pool())
+            .bootstrap(state.bootstrap())
+            .workspace(&request.workspace)
+            .priority(priority)
+            .call()
+            .await?;
     }
     let lease_seconds =
         normalized_lease_seconds(request.lease_seconds, state.default_lease_seconds());
@@ -2018,16 +2118,16 @@ pub(crate) async fn claim_next_task(
             }
         };
 
-        match persist_task_claim(
-            &mut tx,
-            &request.workspace,
-            &request.actor,
-            candidate.task_id,
-            lease_seconds,
-            claimed_at,
-            &payload,
-        )
-        .await
+        match persist_task_claim()
+            .tx(&mut tx)
+            .workspace(&request.workspace)
+            .actor(&request.actor)
+            .task_id(candidate.task_id)
+            .lease_seconds(lease_seconds)
+            .claimed_at(claimed_at)
+            .payload(&payload)
+            .call()
+            .await
         {
             Ok((record, task)) => {
                 let receipt = complete_idempotent_command(
@@ -2039,20 +2139,22 @@ pub(crate) async fn claim_next_task(
                 .await?;
                 tx.commit().await?;
                 let task_record = TaskRecord::from(task.clone());
-                project_graph_event(
-                    state.pool(),
-                    state.projection_coordinator(),
-                    &record.workspace,
-                    record.event_id,
-                    Box::pin(project_claimed_task_record(
-                        state.graph(),
-                        state.pool(),
-                        &task,
-                        &task_record,
-                        &record,
-                    )),
-                )
-                .await?;
+                project_graph_event()
+                    .pool(state.pool())
+                    .projection_coordinator(state.projection_coordinator())
+                    .workspace(&record.workspace)
+                    .event_id(record.event_id)
+                    .operation(Box::pin(
+                        project_claimed_task_record()
+                            .graph(state.graph())
+                            .pool(state.pool())
+                            .task(&task)
+                            .task_record(&task_record)
+                            .claim(&record)
+                            .call(),
+                    ))
+                    .call()
+                    .await?;
                 return Ok(success_with_receipt(Some(record), receipt));
             }
             Err(ThreadplaneServerError::Conflict { .. }) => {
