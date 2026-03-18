@@ -117,9 +117,9 @@ where
     ResponseType: DeserializeOwned,
 {
     let status = response.status();
-    let body = response
-        .text()
-        .context(ResponseBodyRead { url: url.to_owned() })?;
+    let body = response.text().context(ResponseBodyRead {
+        url: url.to_owned(),
+    })?;
     ensure_success(status, request.metadata.method.as_str(), url, &body)?;
     deserialize_response(transport, &body, url)
 }

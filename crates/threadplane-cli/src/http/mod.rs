@@ -47,7 +47,11 @@ pub(crate) fn get_json<T>(client: &Client, server: &str, path: &str) -> Result<T
 where
     T: DeserializeOwned,
 {
-    send_json(client, server, &JsonRequest::<(), T>::new(Method::GET, path))
+    send_json(
+        client,
+        server,
+        &JsonRequest::<(), T>::new(Method::GET, path),
+    )
 }
 
 define_json_mutation!(patch_json, Method::PATCH);

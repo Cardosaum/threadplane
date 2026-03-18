@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, Snafu};
 use xdg::BaseDirectories;
 
-use crate::types::{PublicKeyAlgorithm, WorkspaceAuthPolicy, WorkspacePriorityPolicy, WorkspaceRole};
+use crate::types::{
+    PublicKeyAlgorithm, WorkspaceAuthPolicy, WorkspacePriorityPolicy, WorkspaceRole,
+};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const DEPENDS_ON_RELATION: &str = "depends_on";
@@ -236,8 +238,7 @@ pub fn discover_threadplane_config(
 ) -> Result<ConfigDiscovery, ThreadplaneError> {
     let env_override = config_path_from_env();
     let explicit_override = config_path.map(Path::to_path_buf);
-    let (search_order, selected_path) =
-        resolve_config_path(config_path, env_override.clone())?;
+    let (search_order, selected_path) = resolve_config_path(config_path, env_override.clone())?;
 
     Ok(ConfigDiscovery {
         env_override,
@@ -253,9 +254,12 @@ fn threadplane_config_figment(
     discovery: &ConfigDiscovery,
     overrides: &ThreadplaneConfigOverrides,
 ) -> Figment {
-    let file_layer = discovery.selected_path.as_ref().map_or_else(Figment::new, |config_path| {
-        Figment::new().merge(Toml::file(config_path))
-    });
+    let file_layer = discovery
+        .selected_path
+        .as_ref()
+        .map_or_else(Figment::new, |config_path| {
+            Figment::new().merge(Toml::file(config_path))
+        });
 
     file_layer
         .merge(Env::prefixed(ENV_PREFIX).split("__"))

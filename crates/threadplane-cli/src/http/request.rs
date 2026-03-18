@@ -46,7 +46,7 @@ mod tests {
         reason = "Test failures should print the underlying builder error clearly."
     )]
 
-    use proptest::prelude::*;
+    use proptest::{option, prelude::*};
     use reqwest::{blocking::Client, header::HeaderValue, Method};
     use rstest::rstest;
 
@@ -136,12 +136,12 @@ mod tests {
         #[test]
         fn request_preserves_user_supplied_path(
             segment in "[a-z0-9]{1,8}",
-            suffix in proptest::option::of("[a-z0-9]{1,8}"),
+            suffix in option::of("[a-z0-9]{1,8}"),
         ) {
-            let path = match suffix {
-                Some(suffix) => format!("/{segment}/{suffix}"),
-                None => format!("/{segment}"),
-            };
+            let path = suffix.map_or_else(
+                || format!("/{segment}"),
+                |segment_suffix| format!("/{segment}/{segment_suffix}"),
+            );
             let request = JsonRequest::<(), serde_json::Value>::new(Method::GET, &path);
 
             prop_assert_eq!(request.path, path.as_str());

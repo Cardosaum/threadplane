@@ -39,15 +39,27 @@ mod tests {
         reason = "Test failures should print the underlying builder error clearly."
     )]
 
-    use proptest::prelude::*;
+    use proptest::{option, prelude::*};
     use rstest::rstest;
 
     use super::RequestTarget;
 
     #[rstest]
-    #[case("http://127.0.0.1:4000", "http://127.0.0.1:4000/", "http://127.0.0.1:4000/v1/tasks")]
-    #[case("http://127.0.0.1:4000/", "http://127.0.0.1:4000/", "http://127.0.0.1:4000/v1/tasks")]
-    #[case("http://127.0.0.1:4000/api", "http://127.0.0.1:4000/api/", "http://127.0.0.1:4000/api/v1/tasks")]
+    #[case(
+        "http://127.0.0.1:4000",
+        "http://127.0.0.1:4000/",
+        "http://127.0.0.1:4000/v1/tasks"
+    )]
+    #[case(
+        "http://127.0.0.1:4000/",
+        "http://127.0.0.1:4000/",
+        "http://127.0.0.1:4000/v1/tasks"
+    )]
+    #[case(
+        "http://127.0.0.1:4000/api",
+        "http://127.0.0.1:4000/api/",
+        "http://127.0.0.1:4000/api/v1/tasks"
+    )]
     fn request_target_normalizes_base_urls(
         #[case] server: &str,
         #[case] expected_root: &str,
@@ -70,14 +82,14 @@ mod tests {
         #[test]
         fn request_target_joins_paths_without_double_slashes(
             first in "[a-z0-9]{1,8}",
-            second in proptest::option::of("[a-z0-9]{1,8}"),
+            second in option::of("[a-z0-9]{1,8}"),
         ) {
             let target = RequestTarget::new("http://127.0.0.1:4000/")
                 .unwrap_or_else(|error| panic!("target should build: {error}"));
-            let path = match second {
-                Some(second) => format!("/{first}/{second}"),
-                None => format!("/{first}"),
-            };
+            let path = second.map_or_else(
+                || format!("/{first}"),
+                |second_segment| format!("/{first}/{second_segment}"),
+            );
             let joined = target
                 .request_url(&path)
                 .unwrap_or_else(|error| panic!("url should build: {error}"));

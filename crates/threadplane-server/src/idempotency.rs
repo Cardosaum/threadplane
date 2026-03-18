@@ -102,7 +102,7 @@ pub(crate) async fn begin_idempotent_command<T: DeserializeOwned>(
             context.request_payload,
             now,
         )
-            .await;
+        .await;
     }
 
     let command_id = Uuid::new_v4();

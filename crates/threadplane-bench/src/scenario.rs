@@ -157,12 +157,7 @@ fn execute_operation(client: &Client, worker_context: &WorkerContext, plan: Oper
                 "labels": ["benchmark"],
                 "epic_id": null,
             });
-            post_json(
-                client,
-                &worker_context.server,
-                "/v1/tasks",
-                &request_body,
-            )
+            post_json(client, &worker_context.server, "/v1/tasks", &request_body)
         }
         OperationKind::ListEvents => get_ok(
             client,
