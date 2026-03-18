@@ -20,3 +20,12 @@ fmt:
 
 e2e:
     ./scripts/e2e.sh
+
+hooks-install:
+    lefthook install
+
+hooks-pre-commit:
+    lefthook run pre-commit --all-files
+
+hooks-pre-push:
+    lefthook run pre-push

@@ -16,6 +16,7 @@
 - [What You Can Do Today](#what-you-can-do-today)
 - [Quick Start](#quick-start)
 - [Two-Minute Walkthrough](#two-minute-walkthrough)
+- [Development Hooks](#development-hooks)
 - [Core Concepts](#core-concepts)
 - [Workspace Governance](#workspace-governance)
 - [CLI Overview](#cli-overview)
@@ -147,6 +148,30 @@ workspace=e2e-...
 
 > [!NOTE]
 > For day-to-day local dogfooding, `./scripts/dogfood.sh up` is the fastest path. For repeatable perf checks, use `./scripts/benchmark.sh mixed`.
+
+## Development Hooks
+
+Install the local hooks once per clone:
+
+```bash
+$ lefthook install
+sync hooks: ✔ done
+```
+
+`threadplane` uses a tight two-level hook loop:
+
+- `pre-commit`: format staged Rust files in place and run `cargo check --workspace`
+- `pre-push`: run `cargo fmt --all --check`, `cargo +nightly clippy --workspace --all-targets`, `cargo test --workspace`, and `./scripts/e2e.sh`
+
+You can trigger the same checks manually:
+
+```bash
+$ just hooks-pre-commit
+$ just hooks-pre-push
+```
+
+> [!TIP]
+> The `rustfmt` hook only touches staged `*.rs` files, so it stays focused and avoids reformatting unrelated work in your tree.
 
 ## Two-Minute Walkthrough
 

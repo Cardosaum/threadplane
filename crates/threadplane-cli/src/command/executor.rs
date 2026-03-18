@@ -8,9 +8,9 @@
     reason = "Executor uses the command module as its import boundary to keep the orchestration layer concise."
 )]
 
-use super::*;
 use super::paths::*;
 use super::render::*;
+use super::*;
 
 pub(crate) fn execute<'cfg, 'ctx, A, O, S>(
     cli: Cli,
@@ -65,9 +65,13 @@ where
             Command::Epic(epic_command) => self.handle_epic(idempotency_key, epic_command)?,
             Command::Events(events_command) => self.handle_events(events_command)?,
             Command::Link(link_command) => self.handle_link(idempotency_key, link_command)?,
-            Command::Memory(memory_command) => self.handle_memory(idempotency_key, memory_command)?,
+            Command::Memory(memory_command) => {
+                self.handle_memory(idempotency_key, memory_command)?;
+            }
             Command::Note(note_command) => self.handle_note(idempotency_key, note_command)?,
-            Command::Projection(projection_command) => self.handle_projection(&projection_command)?,
+            Command::Projection(projection_command) => {
+                self.handle_projection(&projection_command)?;
+            }
             Command::Scope => self.handle_scope()?,
             Command::Task(task_command) => self.handle_task(idempotency_key, task_command)?,
             Command::Workspace(workspace_command) => {
@@ -159,11 +163,7 @@ where
         }
     }
 
-    fn handle_link(
-        &mut self,
-        idempotency_key: Option<&str>,
-        command: LinkCommand,
-    ) -> Result<()> {
+    fn handle_link(&mut self, idempotency_key: Option<&str>, command: LinkCommand) -> Result<()> {
         match command.command {
             LinkSubcommand::Add(link) => {
                 let request = AddLinkRequest {
@@ -300,11 +300,7 @@ where
         }
     }
 
-    fn handle_note(
-        &mut self,
-        idempotency_key: Option<&str>,
-        command: NoteCommand,
-    ) -> Result<()> {
+    fn handle_note(&mut self, idempotency_key: Option<&str>, command: NoteCommand) -> Result<()> {
         match command.command {
             NoteSubcommand::Add(add) => {
                 let request = CreateNoteRequest {
@@ -341,11 +337,7 @@ where
         }
     }
 
-    fn handle_offer_task(
-        &mut self,
-        idempotency_key: Option<&str>,
-        task: OfferTask,
-    ) -> Result<()> {
+    fn handle_offer_task(&mut self, idempotency_key: Option<&str>, task: OfferTask) -> Result<()> {
         let workspace_policy = self.fetch_workspace_policy_summary(&task.workspace)?;
         let request = OfferTaskRequest {
             workspace: task.workspace,
@@ -357,7 +349,8 @@ where
             metadata: task_metadata_from_args(task.metadata, &workspace_policy)?,
         };
         let response: serde_json::Value =
-            self.context.post_json("/v1/tasks", &request, idempotency_key)?;
+            self.context
+                .post_json("/v1/tasks", &request, idempotency_key)?;
         self.context.print_value(&response)
     }
 
@@ -452,7 +445,8 @@ where
 
         match entity.format {
             OutputFormat::Compact => {
-                self.context.print_compact(&render_entity_context_compact(&response.data));
+                self.context
+                    .print_compact(&render_entity_context_compact(&response.data));
                 Ok(())
             }
             OutputFormat::Json => self.context.print_value(&response),
@@ -465,11 +459,7 @@ where
         self.context.print_value(&response)
     }
 
-    fn handle_task(
-        &mut self,
-        idempotency_key: Option<&str>,
-        command: TaskCommand,
-    ) -> Result<()> {
+    fn handle_task(&mut self, idempotency_key: Option<&str>, command: TaskCommand) -> Result<()> {
         match command.command {
             TaskSubcommand::BlockedBy(task) => {
                 self.handle_task_dependency_view(&task, TaskDependencyViewKind::BlockedBy)
@@ -589,9 +579,9 @@ where
     ) -> Result<()> {
         match command.command {
             WorkspaceSubcommand::PolicyShow(workspace) => {
-                let response: ApiEnvelope<WorkspacePolicy> =
-                    self.context
-                        .get_json(&workspace_policy_path(&workspace.workspace))?;
+                let response: ApiEnvelope<WorkspacePolicy> = self
+                    .context
+                    .get_json(&workspace_policy_path(&workspace.workspace))?;
                 self.context.print_value(&response)
             }
             WorkspaceSubcommand::PolicySet(workspace) => {
@@ -618,8 +608,9 @@ where
                 self.context.print_value(&response)
             }
             WorkspaceSubcommand::MemberList(workspace) => {
-                let response: ApiEnvelope<Vec<WorkspaceMembership>> =
-                    self.context.get_json(&workspace_memberships_path(&workspace.workspace))?;
+                let response: ApiEnvelope<Vec<WorkspaceMembership>> = self
+                    .context
+                    .get_json(&workspace_memberships_path(&workspace.workspace))?;
                 self.context.print_value(&response)
             }
             WorkspaceSubcommand::MemberGrant(workspace) => {
@@ -731,11 +722,7 @@ where
         self.context.print_value(&response)
     }
 
-    fn handle_claim_task(
-        &mut self,
-        idempotency_key: Option<&str>,
-        task: ClaimTask,
-    ) -> Result<()> {
+    fn handle_claim_task(&mut self, idempotency_key: Option<&str>, task: ClaimTask) -> Result<()> {
         let request = ClaimTaskRequest {
             workspace: task.workspace,
             actor: task.actor,
@@ -787,9 +774,11 @@ where
                 };
                 let request_key = idempotency_key
                     .map(|root_key| format!("{root_key}:triage-update-epic:{task_id}"));
-                let _: serde_json::Value =
-                    self.context
-                        .patch_json(&task_path(task_id), &request, request_key.as_deref())?;
+                let _: serde_json::Value = self.context.patch_json(
+                    &task_path(task_id),
+                    &request,
+                    request_key.as_deref(),
+                )?;
                 outcome.changed = true;
                 outcome.updated = true;
             }

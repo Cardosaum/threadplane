@@ -1,0 +1,51 @@
+min_version: "2.1.1"
+
+pre-commit:
+  parallel: true
+  fail_on_changes: ci
+  jobs:
+    - name: rustfmt-staged
+      glob:
+        - "*.rs"
+      run: ./scripts/hooks/rustfmt-staged.sh {staged_files}
+      stage_fixed: true
+
+    - name: cargo-check
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo check --workspace --quiet
+
+pre-push:
+  jobs:
+    - name: fmt-check
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo fmt --all --check
+
+    - name: clippy
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo +nightly clippy --workspace --all-targets
+
+    - name: test
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo test --workspace
+
+    - name: e2e
+      glob:
+        - "*.rs"
+        - "Cargo.toml"
+        - "Cargo.lock"
+        - "compose.yaml"
+        - "etc/*.toml"
+        - "scripts/**"
+      run: ./scripts/e2e.sh

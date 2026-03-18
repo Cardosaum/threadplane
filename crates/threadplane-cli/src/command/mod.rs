@@ -1080,7 +1080,6 @@ enum TaskDependencyViewKind {
     Blocks,
 }
 
-
 pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<String> {
     if comparison.matches {
         return None;
@@ -1102,7 +1101,6 @@ pub(crate) fn build_mismatch_warning(comparison: &BuildComparison) -> Option<Str
         changed_fields,
     ))
 }
-
 
 fn parse_task_priority_input(input: &str) -> Result<TaskPriority> {
     TaskPriority::new(input).ok_or_else(|| {
