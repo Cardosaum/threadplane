@@ -19,6 +19,7 @@ axum = { version = "0.8.8", default-features = false, features = ["http1", "json
 bon = "3.8.1"
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "serde", "std"] }
 clap = { version = "4.6.0", features = ["derive", "env", "wrap_help"] }
+criterion = { version = "0.7.0", default-features = false, features = ["cargo_bench_support", "html_reports"] }
 derive_more = { version = "2.1.1", default-features = false, features = ["constructor", "display"] }
 figment = { version = "0.10.19", features = ["env", "test", "toml"] }
 neo4rs = "0.8.0"

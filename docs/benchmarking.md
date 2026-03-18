@@ -3,6 +3,8 @@
 `threadplane-bench` is the repeatable load harness for the repository. It drives the public HTTP API and reports machine-readable throughput and latency summaries, so we can compare runs over time without inventing a second measurement toolchain.
 The benchmark scripts always run the harness in `--release`, because debug-mode benchmark numbers are misleading.
 
+For smaller hot-path measurements inside reusable library code, the repo also ships Criterion microbenchmarks. Use those when you want to measure a pure function or normalization/parsing path without involving the network stack or Docker services.
+
 ## Quick Start
 
 Run the mixed read/write profile against your configured server:
@@ -27,6 +29,25 @@ It prints a JSON report with:
 - total run duration
 - throughput in operations per second
 - latency summaries per operation kind
+
+## Microbenchmarks
+
+Run the Criterion microbenchmarks for core hot paths with:
+
+```bash
+cargo bench -p threadplane-core --bench core_hot_paths
+```
+
+The current Criterion suite covers:
+
+- task label normalization
+- memory tag normalization
+- memory recall-trigger normalization
+- entity-ref parsing
+- relation-type normalization
+- workspace policy validation
+
+Use this when you want fast feedback on allocation-heavy helpers and parsing/normalization logic, rather than full end-to-end throughput.
 
 ## Direct Usage
 

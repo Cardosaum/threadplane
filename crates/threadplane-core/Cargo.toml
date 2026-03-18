@@ -10,6 +10,10 @@ repository = "https://github.com/Cardosaum/threadplane"
 rust-version.workspace = true
 version.workspace = true
 
+[[bench]]
+name = "core_hot_paths"
+harness = false
+
 [lints]
 workspace = true
 
@@ -24,5 +28,6 @@ uuid.workspace = true
 xdg.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 proptest.workspace = true
 rstest.workspace = true
